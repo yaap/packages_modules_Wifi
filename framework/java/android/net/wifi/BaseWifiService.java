@@ -232,6 +232,12 @@ public class BaseWifiService extends IWifiManager.Stub {
     }
 
     @Override
+    public void getBssidBlocklist(ParceledListSlice<WifiSsid> ssids,
+            IMacAddressListListener listener) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void setMacRandomizationSettingPasspointEnabled(String fqdn, boolean enable) {
         throw new UnsupportedOperationException();
     }
@@ -247,7 +253,7 @@ public class BaseWifiService extends IWifiManager.Stub {
     }
 
     @Override
-    public List<ScanResult> getScanResults(String callingPackage, String callingFeatureId) {
+    public ParceledListSlice getScanResults(String callingPackage, String callingFeatureId) {
         throw new UnsupportedOperationException();
     }
 
@@ -484,8 +490,8 @@ public class BaseWifiService extends IWifiManager.Stub {
     }
 
     @Override
-    public boolean startTetheredHotspotRequest(
-            TetheringManager.TetheringRequest request, String packageName) {
+    public void startTetheredHotspotRequest(TetheringManager.TetheringRequest request,
+            ISoftApCallback callback, String packageName) {
         throw new UnsupportedOperationException();
     }
 
