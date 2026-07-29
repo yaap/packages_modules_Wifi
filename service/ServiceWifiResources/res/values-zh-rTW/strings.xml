@@ -154,8 +154,8 @@
     <string name="wifi_interface_priority_approve" msgid="7877379614986261096">"允許"</string>
     <string name="wifi_interface_priority_reject" msgid="1378461018835886777">"不允許"</string>
     <string name="wifi_interface_priority_interface_name_sta" msgid="5107477901500010776">"STA"</string>
-    <string name="wifi_interface_priority_interface_name_ap" msgid="161777054136866061">"Wi‑Fi 無線基地台"</string>
-    <string name="wifi_interface_priority_interface_name_ap_bridge" msgid="1270364818879977821">"Wi‑Fi 無線基地台"</string>
+    <string name="wifi_interface_priority_interface_name_ap" msgid="161777054136866061">"Wi‑Fi 熱點"</string>
+    <string name="wifi_interface_priority_interface_name_ap_bridge" msgid="1270364818879977821">"Wi‑Fi 熱點"</string>
     <string name="wifi_interface_priority_interface_name_p2p" msgid="1278122698099149708">"Wi-Fi Direct"</string>
     <string name="wifi_interface_priority_interface_name_nan" msgid="8812888073122966870">"Wi‑Fi Aware"</string>
     <string name="wifi_ca_cert_dialog_title" msgid="3872340345882915806">"這是受信任的網路嗎？"</string>
@@ -218,4 +218,11 @@
     <string name="wifi_network_switch_dialog_title_bad_internet" msgid="6013385270249705547">"<xliff:g id="SSID_0">%1$s</xliff:g> 品質不佳，是否要切換至 <xliff:g id="SSID_1">%2$s</xliff:g>？"</string>
     <string name="wifi_network_switch_dialog_positive_button" msgid="7845507995422722454">"切換"</string>
     <string name="wifi_network_switch_dialog_negative_button" msgid="1496665895689498806">"不要切換"</string>
+    <string name="wifi_disconnect_dialog_title" msgid="7541989406466882747">"要中斷與「<xliff:g id="APP_NAME">%1$s</xliff:g>」的連線嗎？"</string>
+    <string name="wifi_disconnect_dialog_message" msgid="5116841532118842227">"中斷這個網路連線會導致與「<xliff:g id="APP_NAME">%1$s</xliff:g>」的連線中斷。"</string>
+    <string name="wifi_disconnect_dialog_positive_button" msgid="1193888906224230855">"中斷連線"</string>
+    <string name="wifi_disconnect_dialog_negative_button" msgid="5075682597077355859">"取消"</string>
+    <string name="wifi_disconnect_dialog_new_connection_title" msgid="6276398076311281426">"要連線至其他 Wi-Fi 網路嗎？"</string>
+    <string name="wifi_disconnect_dialog_new_connection_message" msgid="2830348590173029295">"連線至「<xliff:g id="SSID">%2$s</xliff:g>」會中斷「<xliff:g id="APP_NAME">%1$s</xliff:g>」的連線"</string>
+    <string name="wifi_disconnect_dialog_new_connection_positive_button" msgid="4891994857934666730">"連線"</string>
 </resources>

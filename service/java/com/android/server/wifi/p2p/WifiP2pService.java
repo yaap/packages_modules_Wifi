@@ -52,4 +52,14 @@ public final class WifiP2pService extends SystemService {
             mImpl.handleBootCompleted();
         }
     }
+
+    @Override
+    public void onUserSwitching(TargetUser from, TargetUser to) {
+        mImpl.onUserSwitching(to.getUserHandle().getIdentifier());
+    }
+
+    @Override
+    public void onUserStopping(TargetUser user) {
+        mImpl.onUserStop(user.getUserHandle().getIdentifier());
+    }
 }

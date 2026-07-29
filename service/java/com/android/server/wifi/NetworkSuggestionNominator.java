@@ -20,6 +20,7 @@ import static com.android.server.wifi.WifiNetworkSelector.toNetworkString;
 
 import android.annotation.NonNull;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.util.Environment;
 import android.os.Process;
 import android.telephony.TelephonyManager;
 import android.util.LocalLog;
@@ -30,6 +31,7 @@ import android.util.SparseArray;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.WifiNetworkSuggestionsManager.ExtendedWifiNetworkSuggestion;
 import com.android.server.wifi.entitlement.PseudonymInfo;
+import com.android.wifi.flags.Flags;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -61,17 +63,20 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
     private final WifiCarrierInfoManager mWifiCarrierInfoManager;
     private final WifiPseudonymManager mWifiPseudonymManager;
     private final WifiMetrics mWifiMetrics;
+    private final WifiDeviceStateChangeManager mWifiDeviceStateChangeManager;
 
     NetworkSuggestionNominator(WifiNetworkSuggestionsManager networkSuggestionsManager,
             WifiConfigManager wifiConfigManager,
             LocalLog localLog, WifiCarrierInfoManager wifiCarrierInfoManager,
-            WifiPseudonymManager wifiPseudonymManager, WifiMetrics wifiMetrics) {
+            WifiPseudonymManager wifiPseudonymManager, WifiMetrics wifiMetrics,
+            WifiDeviceStateChangeManager wifiDeviceStateChangeManager) {
         mWifiNetworkSuggestionsManager = networkSuggestionsManager;
         mWifiConfigManager = wifiConfigManager;
         mLocalLog = localLog;
         mWifiCarrierInfoManager = wifiCarrierInfoManager;
         mWifiPseudonymManager = wifiPseudonymManager;
         mWifiMetrics = wifiMetrics;
+        mWifiDeviceStateChangeManager = wifiDeviceStateChangeManager;
     }
 
     @Override
@@ -92,16 +97,17 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
             return;
         }
         MatchMetaInfo matchMetaInfo = new MatchMetaInfo();
+        boolean isAapmEnabled = mWifiDeviceStateChangeManager.isAapmEnabled();
         if (passpointCandidates != null) {
             findMatchedPasspointSuggestionNetworks(
                     passpointCandidates, matchMetaInfo, untrustedNetworkAllowed,
                     oemPaidNetworkAllowed,
-                    oemPrivateNetworkAllowed, restrictedNetworkAllowedUids);
+                    oemPrivateNetworkAllowed, restrictedNetworkAllowedUids, isAapmEnabled);
         }
 
         findMatchedSuggestionNetworks(scanDetails, matchMetaInfo, untrustedNetworkAllowed,
                 oemPaidNetworkAllowed,
-                oemPrivateNetworkAllowed, restrictedNetworkAllowedUids);
+                oemPrivateNetworkAllowed, restrictedNetworkAllowedUids, isAapmEnabled);
 
         if (matchMetaInfo.isEmpty()) {
             mLocalLog.log("did not see any matching auto-join enabled network suggestions.");
@@ -196,7 +202,7 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
             List<Pair<ScanDetail, WifiConfiguration>> candidates,
             MatchMetaInfo matchMetaInfo, boolean untrustedNetworkAllowed,
             boolean oemPaidNetworkAllowed, boolean oemPrivateNetworkAllowed,
-            Set<Integer> restrictedNetworkAllowedUids) {
+            Set<Integer> restrictedNetworkAllowedUids, boolean isAapmEnabled) {
         for (Pair<ScanDetail, WifiConfiguration> candidate : candidates) {
             WifiConfiguration config = candidate.second;
             if (!config.fromWifiNetworkSuggestion) {
@@ -221,7 +227,7 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
             }
             if (!isNetworkAvailableToAutoConnect(config, untrustedNetworkAllowed,
                     oemPaidNetworkAllowed, oemPrivateNetworkAllowed,
-                    restrictedNetworkAllowedUids)) {
+                    restrictedNetworkAllowedUids, isAapmEnabled)) {
                 mWifiPseudonymManager.retrievePseudonymOnFailureTimeoutExpired(config);
                 continue;
             } else {
@@ -235,7 +241,8 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
     private void findMatchedSuggestionNetworks(List<ScanDetail> scanDetails,
             MatchMetaInfo matchMetaInfo, boolean untrustedNetworkAllowed,
             boolean oemPaidNetworkAllowed,
-            boolean oemPrivateNetworkAllowed, Set<Integer> restrictedNetworkAllowedUids) {
+            boolean oemPrivateNetworkAllowed, Set<Integer> restrictedNetworkAllowedUids,
+            boolean isAapmEnabled) {
         for (ScanDetail scanDetail : scanDetails) {
             Set<ExtendedWifiNetworkSuggestion> matchingExtNetworkSuggestions =
                     mWifiNetworkSuggestionsManager.getNetworkSuggestionsForScanDetail(scanDetail);
@@ -269,7 +276,7 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
                 }
                 if (!isNetworkAvailableToAutoConnect(wCmConfiguredNetwork, untrustedNetworkAllowed,
                         oemPaidNetworkAllowed, oemPrivateNetworkAllowed,
-                        restrictedNetworkAllowedUids)) {
+                        restrictedNetworkAllowedUids, isAapmEnabled)) {
                     mWifiPseudonymManager.retrievePseudonymOnFailureTimeoutExpired(
                             wCmConfiguredNetwork);
                     continue;
@@ -284,7 +291,8 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
 
     private boolean isNetworkAvailableToAutoConnect(WifiConfiguration config,
             boolean untrustedNetworkAllowed, boolean oemPaidNetworkAllowed,
-            boolean oemPrivateNetworkAllowed, Set<Integer> restrictedNetworkAllowedUids) {
+            boolean oemPrivateNetworkAllowed, Set<Integer> restrictedNetworkAllowedUids,
+            boolean isAapmEnabled) {
         // Ignore insecure enterprise config.
         if (config.isEnterprise() && config.enterpriseConfig.isEapMethodServerCertUsed()
                 && !config.enterpriseConfig
@@ -310,6 +318,13 @@ public class NetworkSuggestionNominator implements WifiNetworkSelector.NetworkNo
         }
         if (mWifiConfigManager.isNetworkTemporarilyDisabledByUser(network)) {
             mLocalLog.log("Ignoring user disabled network: " + network);
+            return false;
+        }
+        if (Environment.isSdkAtLeastC()
+                && Flags.disableInsecureWifiAutojoinWhenAapmOn()
+                && isAapmEnabled
+                && !config.isAutoJoinInAdvancedProtectionModeEnabled()) {
+            mLocalLog.log("Ignoring auto join disabled on AAP network: " + network);
             return false;
         }
         return config.allowAutojoin;

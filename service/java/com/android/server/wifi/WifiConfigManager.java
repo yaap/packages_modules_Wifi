@@ -229,7 +229,7 @@ public class WifiConfigManager {
         /**
          * Called when the Wi-Fi auto-join restriction to a subscription ID stops.
          */
-        void onRestrictionStopped();
+        void onRestrictionsStopped();
     }
 
     /**
@@ -391,6 +391,11 @@ public class WifiConfigManager {
     private int mCurrentUserId = UserHandle.SYSTEM.getIdentifier();
 
     /**
+     * Whether the current user stop completed.
+     */
+    private boolean mIsCurrentUserStopHandled = false;
+
+    /**
      * Whether the forground user is an admin user.
      */
     private boolean mIsCurrentUserAdmin = false;
@@ -505,9 +510,9 @@ public class WifiConfigManager {
                     }
 
                     @Override
-                    public void onRestrictionStopped() {
+                    public void onRestrictionsStopped() {
                         if (mOnRestrictAutoJoinToSubIdCallback != null) {
-                            mOnRestrictAutoJoinToSubIdCallback.onRestrictionStopped();
+                            mOnRestrictAutoJoinToSubIdCallback.onRestrictionsStopped();
                         }
                     }
                 });
@@ -823,18 +828,25 @@ public class WifiConfigManager {
      * This retrieves a copy of the internal configurations maintained by WifiConfigManager and
      * should be used for any public interfaces.
      *
-     * @param savedOnly     Retrieve only saved networks.
-     * @param maskPasswords Mask passwords or not.
-     * @param targetUid Target UID for MAC address reading: -1 (Invalid UID) = mask all,
-     *                  WIFI||SYSTEM = mask none, <other> = mask all but the targetUid (carrier
-     *                  app).
+     * @param savedOnly                Retrieve only saved networks.
+     * @param maskPasswords            Mask passwords or not.
+     * @param createdByCurrentUserOnly Retrieve only networks created by the current user.
+     * @param targetUid                Target UID for MAC address reading:
+     *                                 -1 (Invalid UID) = mask all,
+     *                                 WIFI||SYSTEM = mask none,
+     *                                 <other> = mask all but the targetUid (carrier app).
      * @return List of WifiConfiguration objects representing the networks.
      */
-    private List<WifiConfiguration> getConfiguredNetworks(
-            boolean savedOnly, boolean maskPasswords, int targetUid) {
+    private List<WifiConfiguration> getConfiguredNetworks(boolean savedOnly, boolean maskPasswords,
+            boolean createdByCurrentUserOnly, int targetUid) {
         List<WifiConfiguration> networks = new ArrayList<>();
         for (WifiConfiguration config : getInternalConfiguredNetworks()) {
             if (savedOnly && (config.ephemeral || config.isPasspoint())) {
+                continue;
+            }
+            if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()
+                    && createdByCurrentUserOnly
+                    && config.getCreatorUserIdInternal() != mCurrentUserId) {
                 continue;
             }
             networks.add(createExternalWifiConfiguration(config, maskPasswords, targetUid));
@@ -848,7 +860,8 @@ public class WifiConfigManager {
      * @return List of WifiConfiguration objects representing the networks.
      */
     public List<WifiConfiguration> getConfiguredNetworks() {
-        return getConfiguredNetworks(false, true, Process.WIFI_UID);
+        return getConfiguredNetworks(false /* savedOnly */, true /* maskPasswords */,
+                false /* createdByCurrentUserOnly */, Process.WIFI_UID);
     }
 
     /**
@@ -861,7 +874,8 @@ public class WifiConfigManager {
      * @return List of WifiConfiguration objects representing the networks.
      */
     public List<WifiConfiguration> getConfiguredNetworksWithPasswords() {
-        return getConfiguredNetworks(false, false, Process.WIFI_UID);
+        return getConfiguredNetworks(false /* savedOnly */, false /* maskPasswords */,
+                false /* createdByCurrentUserOnly */, Process.WIFI_UID);
     }
 
     /**
@@ -877,7 +891,8 @@ public class WifiConfigManager {
      */
     public @Nullable WifiConfiguration getConfiguredNetworkWithPassword(@NonNull WifiSsid ssid,
             @WifiConfiguration.SecurityType int securityType) {
-        List<WifiConfiguration> wifiConfigurations = getConfiguredNetworks(false, false,
+        List<WifiConfiguration> wifiConfigurations = getConfiguredNetworks(false /* savedOnly */,
+                false /* maskPasswords */, false /* createdByCurrentUserOnly */,
                 Process.WIFI_UID);
         for (WifiConfiguration wifiConfiguration : wifiConfigurations) {
             // Match ssid and security type
@@ -896,7 +911,24 @@ public class WifiConfigManager {
      */
     @Keep
     public List<WifiConfiguration> getSavedNetworks(int targetUid) {
-        return getConfiguredNetworks(true, true, targetUid);
+        return getConfiguredNetworks(true /* savedOnly */, true /* maskPasswords */,
+                false /* createdByCurrentUserOnly */, targetUid);
+    }
+
+    /**
+     * Retrieves the list of all configured networks created by the current user, with passwords in
+     * plaintext.
+     *
+     * WARNING: Don't use this to pass network configurations to external apps or other conditions
+     * where plaintext passwords are not allowed. See {@link #getConfiguredNetworksWithPasswords}
+     * for more details. An example usage is backup data retrieval, see
+     * {@link WifiServiceImpl#retrieveBackupData}.
+     *
+     * @return List of WifiConfiguration objects representing the networks.
+     */
+    public List<WifiConfiguration> getConfiguredNetworksCreatedByCurrentUserWithPassword() {
+        return getConfiguredNetworks(false /* savedOnly */, false /* maskPasswords */,
+                true /* createdByCurrentUserOnly */, Process.WIFI_UID);
     }
 
     /**
@@ -1083,6 +1115,17 @@ public class WifiConfigManager {
     }
 
     /**
+     * Check if the provided network exists in our database.
+     *
+     * @param wifiConfiguration The {@link WifiConfiguration} to be checked with.
+     * @return true if the provided {@link WifiConfiguration} exists, otherwise false.
+     */
+    public boolean isNetworkConfigured(@NonNull WifiConfiguration wifiConfiguration) {
+        wifiConfiguration.convertLegacyFieldsToSecurityParamsIfNeeded();
+        return getInternalConfiguredNetwork(wifiConfiguration) != null;
+    }
+
+    /**
      * Method to send out the configured networks change broadcast when network configurations
      * changed.
      *
@@ -1143,18 +1186,6 @@ public class WifiConfigManager {
             return true;
         }
 
-        // The configuration is disallowed to be updated by other user.
-        if (Environment.isSdkNewerThanB()
-                && mFeatureFlags.multiUserWifiEnhancement()
-                && requireUserCheck && !config.isAllowedToUpdateByOtherUsers()
-                && !mWifiPermissionsUtil.areTwoAppsFromSameUser(config.creatorUid, uid)) {
-            return false;
-        }
-
-        // TODO: ideally package should not be null here (and hence we wouldn't need the
-        // isDeviceOwner(uid) method), but it would require changing  many methods to pass the
-        // package name around (for example, all methods called by
-        // WifiServiceImpl.triggerConnectAndReturnStatus(netId, callingUid)
         final boolean isOrganizationOwnedDeviceAdmin =
                 mWifiPermissionsUtil.isOrganizationOwnedDeviceAdmin(uid, packageName);
 
@@ -1162,6 +1193,13 @@ public class WifiConfigManager {
         // device, allow all modifications.
         if (isOrganizationOwnedDeviceAdmin) {
             return true;
+        }
+
+        // The configuration is disallowed to be updated by other user.
+        if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()
+                && requireUserCheck && !config.isAllowedToUpdateByOtherUsers()
+                && !mWifiPermissionsUtil.areTwoAppsFromSameUser(config.creatorUid, uid)) {
+            return false;
         }
 
         final boolean isCreator = (config.creatorUid == uid);
@@ -1358,6 +1396,11 @@ public class WifiConfigManager {
         }
 
         internalConfig.allowAutojoin = externalConfig.allowAutojoin;
+        if (Environment.isSdkAtLeastC()
+                && mFeatureFlags.disableInsecureWifiAutojoinWhenAapmOn()) {
+            internalConfig.setAutoJoinInAdvancedProtectionModeEnabled(
+                    externalConfig.isAutoJoinInAdvancedProtectionModeEnabled());
+        }
         // Copy over the |WifiEnterpriseConfig| parameters if set. For fields which should
         // only be set by the framework, cache the internal config's value and restore.
         if (externalConfig.enterpriseConfig != null) {
@@ -1396,11 +1439,12 @@ public class WifiConfigManager {
         internalConfig.setRepeaterEnabled(externalConfig.isRepeaterEnabled());
         internalConfig.setSendDhcpHostnameEnabled(externalConfig.isSendDhcpHostnameEnabled());
         internalConfig.setWifi7Enabled(externalConfig.isWifi7Enabled());
-        if (Environment.isSdkNewerThanB()
-                && mFeatureFlags.multiUserWifiEnhancement()
-                && externalConfig.shared) {
-            internalConfig.setAllowedToUpdateByOtherUsers(
-                    externalConfig.isAllowedToUpdateByOtherUsers());
+        if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
+            internalConfig.shared = externalConfig.shared;
+            if (externalConfig.shared) {
+                internalConfig.setAllowedToUpdateByOtherUsers(
+                        externalConfig.isAllowedToUpdateByOtherUsers());
+            }
         }
     }
 
@@ -1460,8 +1504,7 @@ public class WifiConfigManager {
         newInternalConfig.shared = externalConfig.shared;
         newInternalConfig.updateIdentifier = externalConfig.updateIdentifier;
         newInternalConfig.setPasspointUniqueId(externalConfig.getPasspointUniqueId());
-        if (Environment.isSdkNewerThanB()
-                && mFeatureFlags.multiUserWifiEnhancement()
+        if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()
                 && externalConfig.shared) {
             newInternalConfig.setAllowedToUpdateByOtherUsers(
                     externalConfig.isAllowedToUpdateByOtherUsers());
@@ -1469,8 +1512,7 @@ public class WifiConfigManager {
 
         // Add debug information for network addition.
         newInternalConfig.creatorUid = newInternalConfig.lastUpdateUid = uid;
-        if (Environment.isSdkNewerThanB()
-                && mFeatureFlags.multiUserWifiEnhancement()) {
+        if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
             newInternalConfig.setCreatorUserId(mCurrentUserId);
         }
         newInternalConfig.creatorName = newInternalConfig.lastUpdateName =
@@ -1478,6 +1520,21 @@ public class WifiConfigManager {
         newInternalConfig.lastUpdated = mClock.getWallClockMillis();
         newInternalConfig.numRebootsSinceLastUse = 0;
         initRandomizedMacForInternalConfig(newInternalConfig);
+        if (Environment.isSdkAtLeastC()
+                && mFeatureFlags.disableInsecureWifiAutojoinWhenAapmOn()) {
+            for (SecurityParams p : newInternalConfig.getSecurityParamsList()) {
+                if (p.isSecurityType(WifiConfiguration.SECURITY_TYPE_OPEN)
+                        || p.isSecurityType(WifiConfiguration.SECURITY_TYPE_WEP)
+                        || p.isSecurityType(WifiConfiguration.SECURITY_TYPE_OWE)) {
+                    // Only change auto join in AAPM for non DO/PO networks
+                    if (!isDeviceOwnerProfileOwner(
+                            newInternalConfig.creatorUid, newInternalConfig.creatorName)) {
+                        newInternalConfig.setAutoJoinInAdvancedProtectionModeEnabled(false);
+                        break;
+                    }
+                }
+            }
+        }
         return newInternalConfig;
     }
 
@@ -1509,8 +1566,7 @@ public class WifiConfigManager {
         if (overrideCreator) {
             newInternalConfig.creatorName = newInternalConfig.lastUpdateName;
             newInternalConfig.creatorUid = uid;
-            if (Environment.isSdkNewerThanB()
-                    && mFeatureFlags.multiUserWifiEnhancement()) {
+            if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
                 newInternalConfig.setCreatorUserId(mCurrentUserId);
             }
         }
@@ -1733,6 +1789,7 @@ public class WifiConfigManager {
         }
 
         boolean newNetwork = (existingInternalConfig == null);
+
         // This is needed to inform IpClient about any IP configuration changes.
         boolean hasIpChanged =
                 newNetwork || WifiConfigurationUtil.hasIpChanged(
@@ -1918,6 +1975,11 @@ public class WifiConfigManager {
                 || mWifiPermissionsUtil.isProfileOwner(uid, packageName)
                 || mWifiPermissionsUtil.isSystem(packageName, uid)
                 || mWifiPermissionsUtil.isSignedWithPlatformKey(uid);
+    }
+
+    private boolean isDeviceOwnerProfileOwner(int uid, String packageName) {
+        return mWifiPermissionsUtil.isDeviceOwner(uid, packageName)
+                || mWifiPermissionsUtil.isProfileOwner(uid, packageName);
     }
 
     /**
@@ -2179,7 +2241,7 @@ public class WifiConfigManager {
         WifiConfiguration[] copiedConfigs =
                 mConfiguredNetworks.valuesForAllUsers().toArray(new WifiConfiguration[0]);
         for (WifiConfiguration config : copiedConfigs) {
-            if (userId != UserHandle.getUserHandleForUid(config.creatorUid).getIdentifier()) {
+            if (userId != config.getCreatorUserIdInternal()) {
                 continue;
             }
             localLog("Removing network " + config.SSID + ", user " + userId + " removed");
@@ -2443,7 +2505,7 @@ public class WifiConfigManager {
                 networkId, WifiConfiguration.NetworkSelectionStatus.DISABLED_NONE)) {
             return false;
         }
-        mWifiBlocklistMonitor.clearBssidBlocklistForSsid(config.SSID);
+        mWifiBlocklistMonitor.onEnableNetwork(config);
         saveToStore();
         return true;
     }
@@ -2948,6 +3010,41 @@ public class WifiConfigManager {
 
         // Add the scan detail to this network's scan detail cache.
         scanDetailCache.put(scanDetail);
+    }
+
+    /**
+     * Retrieves configured networks corresponding to the provided scan detail.
+     *
+     * @param scanDetail ScanDetail instance  to use for looking up the network.
+     * @return List of |WifiConfiguration| object representing the networks corresponding
+     *         to the scanDetail, null if none exists.
+     */
+    public List<WifiConfiguration> getSavedNetworksForScanDetail(ScanDetail scanDetail) {
+        ScanResult scanResult = scanDetail.getScanResult();
+        if (scanResult == null) {
+            Log.e(TAG, "No scan result found in scan detail");
+            return null;
+        }
+        List<WifiConfiguration> returnNetworks = new ArrayList<>();
+        List<WifiConfiguration> savedNetworks =
+                mConfiguredNetworks.getConfigsByScanResultForCurrentUser(scanResult);
+        for (WifiConfiguration network : savedNetworks) {
+            if (network != null) {
+                saveToScanDetailCacheForNetwork(network, scanDetail);
+                // Cache DTIM values parsed from the beacon frame Traffic Indication Map (TIM)
+                // Information Element (IE), into the associated WifiConfigurations. Most of the
+                // time there is no TIM IE in the scan result (Probe Response instead of Beacon
+                // Frame), these scanResult DTIM's are negative and ignored.
+                // Used for metrics collection.
+                if (scanDetail.getNetworkDetail() != null
+                        && scanDetail.getNetworkDetail().getDtimInterval() > 0) {
+                    network.dtimInterval = scanDetail.getNetworkDetail().getDtimInterval();
+                }
+                returnNetworks.add(
+                        createExternalWifiConfiguration(network, true, Process.WIFI_UID));
+            }
+        }
+        return returnNetworks;
     }
 
     /**
@@ -3463,9 +3560,15 @@ public class WifiConfigManager {
      */
     public void resetSimNetworks() {
         if (mVerboseLoggingEnabled) localLog("resetSimNetworks");
-        for (WifiConfiguration config : getInternalConfiguredNetworks()) {
+        WifiConfiguration[] copiedConfigs = getInternalConfiguredNetworks()
+                .toArray(new WifiConfiguration[0]);
+        for (WifiConfiguration config : copiedConfigs) {
             if (config.enterpriseConfig == null
                     || !config.enterpriseConfig.isAuthenticationSimBased()) {
+                continue;
+            }
+            if (config.ephemeral || config.isPasspoint()) {
+                removeNetwork(config.networkId, config.creatorUid, config.creatorName);
                 continue;
             }
             if (config.enterpriseConfig.getEapMethod() == WifiEnterpriseConfig.Eap.PEAP) {
@@ -3569,14 +3672,20 @@ public class WifiConfigManager {
             mPendingUnlockStoreRead = true;
             return new HashSet<>();
         }
-        if (mUserManager.isUserUnlockingOrUnlocked(UserHandle.of(mCurrentUserId))) {
-            writeBufferedData();
+        Set<Integer> removedNetworkIds = new HashSet<>();
+        // This check is to avoid clearing user data by writing an empty buffer to disk
+        // if handleUserStop was already called for the current user.
+        if (!mIsCurrentUserStopHandled) {
+            if (mUserManager.isUserUnlockingOrUnlocked(UserHandle.of(mCurrentUserId))) {
+                writeBufferedData();
+            }
+            // Remove any private networks of the old user before switching the userId.
+            removedNetworkIds = clearInternalDataForUser(mCurrentUserId);
         }
-        // Remove any private networks of the old user before switching the userId.
-        Set<Integer> removedNetworkIds = clearInternalDataForUser(mCurrentUserId);
         mConfiguredNetworks.setNewUser(userId);
         mCurrentUserId = userId;
-        if (Environment.isSdkNewerThanB() && mFeatureFlags.multiUserWifiEnhancement()) {
+        mIsCurrentUserStopHandled = false;
+        if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
             Context userContext = mContext.createContextAsUser(UserHandle.of(userId), 0);
             UserManager userManager = userContext.getSystemService(UserManager.class);
             mIsCurrentUserAdmin = userManager.isAdminUser();
@@ -3609,7 +3718,7 @@ public class WifiConfigManager {
             Log.e(TAG, "Ignore user unlock for non current user " + userId);
             return;
         }
-        if (Environment.isSdkNewerThanB() && mFeatureFlags.multiUserWifiEnhancement()) {
+        if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
             Context userContext = mContext.createContextAsUser(UserHandle.of(userId), 0);
             UserManager userManager = userContext.getSystemService(UserManager.class);
             mIsCurrentUserAdmin = userManager.isAdminUser();
@@ -3640,6 +3749,9 @@ public class WifiConfigManager {
                 && mUserManager.isUserUnlockingOrUnlocked(UserHandle.of(mCurrentUserId))) {
             writeBufferedData();
             clearInternalDataForUser(mCurrentUserId);
+            if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
+                mIsCurrentUserStopHandled = true;
+            }
         }
     }
 
@@ -4014,7 +4126,6 @@ public class WifiConfigManager {
                 userConfigurations.add(config);
             }
         }
-
         // Remove the configurations for migrated Passpoint configurations.
         for (int networkId : legacyPasspointNetId) {
             mConfiguredNetworks.remove(networkId);
@@ -4777,5 +4888,33 @@ public class WifiConfigManager {
         config.randomizedMacExpirationTimeMs = 0;
         config.randomizedMacLastModifiedTimeMs = 0;
         config.persistentMacRandomizationSeed++;
+    }
+
+    /**
+     * Returns the ID of the current foreground user.
+     *
+     * @return The ID of the current user.
+     */
+    public int getCurrentUserId() {
+        return mCurrentUserId;
+    }
+
+    /**
+     * Updates the uid and userId of a network if needed (when the creatorUid is default). Uid will
+     * be configured as the provided uid and the userId will be configured as the current userId.
+     * These user-related fields are necessary for private network comparison (e.g. existence check)
+     * and in some flows need to be populated in advance (e.g. network restore).
+     *
+     * @param wifiConfiguration The network to update.
+     * @param uid The uid to be configured provided by the caller.
+     */
+    public void updateNetworkWithUidAndCurrentUserIdIfNeeded(
+            @NonNull WifiConfiguration wifiConfiguration, int uid) {
+        // Only updates when the creatorUid hasn't been assigned.
+        if (wifiConfiguration.creatorUid != -1) {
+            return;
+        }
+        wifiConfiguration.creatorUid = wifiConfiguration.lastUpdateUid = uid;
+        wifiConfiguration.setCreatorUserId(mCurrentUserId);
     }
 }

@@ -41,10 +41,10 @@
     <string name="wifi_suggestion_action_allow_imsi_privacy_exemption_confirmation" msgid="2168947026413431603">"ಕನೆಕ್ಟ್ ಮಾಡಿ"</string>
     <string name="wifi_suggestion_action_disallow_imsi_privacy_exemption_confirmation" msgid="5156881939985876066">"ಕನೆಕ್ಟ್ ಮಾಡಬೇಡಿ"</string>
     <string name="wifi_wakeup_onboarding_title" msgid="3868826648004934540">"ವೈ‑ಫೈ ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಆನ್ ಆಗುತ್ತದೆ"</string>
-    <string name="wifi_wakeup_onboarding_subtext" msgid="5705886295837387430">"ನೀವು ಉಳಿಸಿದ ಅಧಿಕ ಗುಣಮಟ್ಟದ ನೆಟ್‌ವರ್ಕ್‌ ಸಮೀಪದಲ್ಲಿದ್ದಾಗ"</string>
+    <string name="wifi_wakeup_onboarding_subtext" msgid="5705886295837387430">"ನೀವು ಸೇವ್ ಮಾಡಿದ ಅಧಿಕ ಗುಣಮಟ್ಟದ ನೆಟ್‌ವರ್ಕ್‌ ಸಮೀಪದಲ್ಲಿದ್ದಾಗ"</string>
     <string name="wifi_wakeup_onboarding_action_disable" msgid="6209706680391785825">"ಮತ್ತೆ ಆನ್ ಮಾಡಲು ಹಿಂತಿರುಗಬೇಡಿ"</string>
     <string name="wifi_wakeup_enabled_title" msgid="5043486751612595850">"ವೈ-ಫೈ ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಆನ್ ಆಗಿದೆ"</string>
-    <string name="wifi_wakeup_enabled_content" msgid="3911262526267025882">"ನೀವು ಉಳಿಸಿದ ನೆಟ್‌ವರ್ಕ್‌ನ ಸಮೀಪವಿರುವಿರಿ: <xliff:g id="NETWORK_SSID">%1$s</xliff:g>"</string>
+    <string name="wifi_wakeup_enabled_content" msgid="3911262526267025882">"ನೀವು ಸೇವ್ ಮಾಡಿದ ನೆಟ್‌ವರ್ಕ್‌ನ ಸಮೀಪವಿರುವಿರಿ: <xliff:g id="NETWORK_SSID">%1$s</xliff:g>"</string>
     <string name="wifi_watchdog_network_disabled" msgid="5769226742956006362">"ವೈ-ಫೈ ಗೆ ಸಂಪರ್ಕಿಸಲು ಸಾಧ್ಯವಾಗುತ್ತಿಲ್ಲ"</string>
     <string name="wifi_watchdog_network_disabled_detailed" msgid="1725243835135539125">" ದುರ್ಬಲ ಇಂಟರ್ನೆಟ್ ಕನೆಕ್ಷನ್ ಅನ್ನು ಹೊಂದಿದೆ."</string>
     <string name="wifi_connect_alert_title" msgid="2368200646665663612">"ಸಂಪರ್ಕವನ್ನು ಅನುಮತಿಸುವುದೇ?"</string>
@@ -218,4 +218,11 @@
     <string name="wifi_network_switch_dialog_title_bad_internet" msgid="6013385270249705547">"<xliff:g id="SSID_0">%1$s</xliff:g> ಕಡಿಮೆ ಗುಣಮಟ್ಟ ಹೊಂದಿದೆ. <xliff:g id="SSID_1">%2$s</xliff:g> ಗೆ ಬದಲಿಸಬೇಕೇ?"</string>
     <string name="wifi_network_switch_dialog_positive_button" msgid="7845507995422722454">"ಬದಲಿಸಿ"</string>
     <string name="wifi_network_switch_dialog_negative_button" msgid="1496665895689498806">"ಬದಲಿಸಬೇಡಿ"</string>
+    <string name="wifi_disconnect_dialog_title" msgid="7541989406466882747">"<xliff:g id="APP_NAME">%1$s</xliff:g> ನಿಂದ ಡಿಸ್‌ಕನೆಕ್ಟ್ ಮಾಡಬೇಕೇ?"</string>
+    <string name="wifi_disconnect_dialog_message" msgid="5116841532118842227">"ಈ ನೆಟ್‌ವರ್ಕ್‌ನಿಂದ ಡಿಸ್‌ಕನೆಕ್ಟ್ ಮಾಡಿದರೆ <xliff:g id="APP_NAME">%1$s</xliff:g> ಡಿಸ್‌ಕನೆಕ್ಟ್ ಆಗುತ್ತದೆ."</string>
+    <string name="wifi_disconnect_dialog_positive_button" msgid="1193888906224230855">"ಡಿಸ್‌ಕನೆಕ್ಟ್ ಮಾಡಿ"</string>
+    <string name="wifi_disconnect_dialog_negative_button" msgid="5075682597077355859">"ರದ್ದುಮಾಡಿ"</string>
+    <string name="wifi_disconnect_dialog_new_connection_title" msgid="6276398076311281426">"ಬೇರೆ ವೈ-ಫೈ ನೆಟ್‌ವರ್ಕ್‌ಗೆ ಕನೆಕ್ಟ್ ಮಾಡಬೇಕೇ?"</string>
+    <string name="wifi_disconnect_dialog_new_connection_message" msgid="2830348590173029295">"<xliff:g id="SSID">%2$s</xliff:g> ಗೆ ಕನೆಕ್ಟ್ ಮಾಡಿದರೆ <xliff:g id="APP_NAME">%1$s</xliff:g> ಡಿಸ್‌ಕನೆಕ್ಟ್ ಆಗುತ್ತದೆ."</string>
+    <string name="wifi_disconnect_dialog_new_connection_positive_button" msgid="4891994857934666730">"ಕನೆಕ್ಟ್ ಮಾಡಿ"</string>
 </resources>

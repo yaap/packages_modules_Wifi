@@ -40,7 +40,7 @@ import java.util.Objects;
  * A class representing information about a specific SoftAP instance. A SoftAP instance may be a
  * single band AP or a bridged AP (across multiple bands). To get the state of the AP interface
  * itself, use {@link android.net.wifi.WifiManager.SoftApCallback#onStateChanged(SoftApState)}.
- * {@see WifiManager}
+ * @see WifiManager
  *
  * @hide
  */
@@ -314,7 +314,7 @@ public final class SoftApInfo implements Parcelable {
      * the default timeout setting defined in device overlays.
      *
      * A value of 0 means that auto shutdown is disabled.
-     * {@see SoftApConfiguration#isAutoShutdownEnabled()}
+     * @see SoftApConfiguration#isAutoShutdownEnabled()
      */
     public long getAutoShutdownTimeoutMillis() {
         return mIdleShutdownTimeoutMillis;
@@ -402,14 +402,14 @@ public final class SoftApInfo implements Parcelable {
     public SoftApInfo() {
     }
 
-    @Override
     /** Implement the Parcelable interface. */
+    @Override
     public int describeContents() {
         return 0;
     }
 
-    @Override
     /** Implement the Parcelable interface */
+    @Override
     public void writeToParcel(@NonNull Parcel dest, int flags) {
         dest.writeInt(mFrequency);
         dest.writeInt(mBandwidth);
@@ -421,8 +421,8 @@ public final class SoftApInfo implements Parcelable {
         dest.writeParcelable(mMldAddress, flags);
     }
 
-    @NonNull
     /** Implement the Parcelable interface */
+    @NonNull
     public static final Creator<SoftApInfo> CREATOR = new Creator<SoftApInfo>() {
         public SoftApInfo createFromParcel(Parcel in) {
             SoftApInfo info = new SoftApInfo();

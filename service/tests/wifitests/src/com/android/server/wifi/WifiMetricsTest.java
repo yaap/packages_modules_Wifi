@@ -23,6 +23,7 @@ import static android.net.wifi.WifiUsabilityStatsEntry.SCORER_TYPE_INVALID;
 import static android.net.wifi.WifiUsabilityStatsEntry.SCORER_TYPE_ML;
 import static android.net.wifi.WifiUsabilityStatsEntry.SCORER_TYPE_VELOCITY;
 
+import static com.android.net.module.util.netlink.StructNlMsgHdr.NLM_F_REQUEST;
 import static com.android.server.wifi.WifiMetrics.convertPreambleTypeEnumToUsabilityStatsType;
 import static com.android.server.wifi.WifiMetricsTestUtil.assertDeviceMobilityStatePnoScanStatsEqual;
 import static com.android.server.wifi.WifiMetricsTestUtil.assertExperimentProbeCountsEqual;
@@ -37,6 +38,7 @@ import static com.android.server.wifi.WifiMetricsTestUtil.buildInt32Count;
 import static com.android.server.wifi.WifiMetricsTestUtil.buildLinkProbeFailureReasonCount;
 import static com.android.server.wifi.WifiMetricsTestUtil.buildLinkProbeFailureStaEvent;
 import static com.android.server.wifi.WifiMetricsTestUtil.buildLinkProbeSuccessStaEvent;
+import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_CMD_GET_INTERFACE;
 import static com.android.server.wifi.proto.WifiStatsLog.SCORER_PREDICTION_RESULT_REPORTED;
 import static com.android.server.wifi.proto.WifiStatsLog.SCORER_PREDICTION_RESULT_REPORTED__DEVICE_STATE__STATE_NO_CELLULAR_MODEM;
 import static com.android.server.wifi.proto.WifiStatsLog.SCORER_PREDICTION_RESULT_REPORTED__DEVICE_STATE__STATE_NO_SIM_INSERTED;
@@ -128,6 +130,8 @@ import com.android.server.wifi.hotspot2.NetworkDetail;
 import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.hotspot2.PasspointMatch;
 import com.android.server.wifi.hotspot2.PasspointProvider;
+import com.android.server.wifi.nl80211.GenericNetlinkMsg;
+import com.android.server.wifi.nl80211.NetlinkConstants;
 import com.android.server.wifi.p2p.WifiP2pMetrics;
 import com.android.server.wifi.proto.WifiStatsLog;
 import com.android.server.wifi.proto.nano.WifiMetricsProto;
@@ -203,6 +207,8 @@ public class WifiMetricsTest extends WifiBaseTest {
     private static final int TEST_CONNECTION_FAILURE_STATUS_CODE = -1;
     private static final String MLO_LINK_STA_MAC_ADDRESS = "12:34:56:78:9a:bc";
     private static final String MLO_LINK_AP_MAC_ADDRESS = "bc:9a:78:56:34:12";
+    private static final String TEST_UNIVERSAL_BSSID = "01:23:45:67:89:10";
+    private static final String TEST_LOCAL_BSSID = "AA:BB:CC:DD:EE:FF";
     private static final int TEST_CHANNEL = 36;
     private static final int POLLING_INTERVAL_DEFAULT = 3000;
     private static final int POLLING_INTERVAL_NOT_DEFAULT = 6000;
@@ -2537,8 +2543,11 @@ public class WifiMetricsTest extends WifiBaseTest {
     @Test
     public void testLogWifiConnectionResultStatsd() throws Exception {
         // Start and end Connection event
-        mWifiMetrics.startConnectionEvent(TEST_IFACE_NAME, createComplexWifiConfig(),
-                "RED", WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE, false,
+        WifiConfiguration config = createComplexWifiConfig();
+        ScanResult candidate = config.getNetworkSelectionStatus().getCandidate();
+        candidate.BSSID = TEST_UNIVERSAL_BSSID;
+        mWifiMetrics.startConnectionEvent(TEST_IFACE_NAME, config,
+                TEST_UNIVERSAL_BSSID, WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE, false,
                 WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__ROLE__ROLE_CLIENT_PRIMARY, TEST_UID);
         mWifiMetrics.reportConnectingDuration(TEST_IFACE_NAME,
                 WIFI_CONNECTING_DURATION_MS, WIFI_CONNECTING_DURATION_MS + 1);
@@ -2561,7 +2570,8 @@ public class WifiMetricsTest extends WifiBaseTest {
                 eq(false),
                 eq(1), eq(TEST_CONNECTION_FAILURE_STATUS_CODE), anyInt(), anyInt(), anyInt(),
                 anyInt(), anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ),
-                eq(WIFI_CONNECTING_DURATION_MS), eq(WIFI_CONNECTING_DURATION_MS + 1), eq(0)));
+                eq(WIFI_CONNECTING_DURATION_MS), eq(WIFI_CONNECTING_DURATION_MS + 1), eq(0),
+                eq(TEST_UNIVERSAL_BSSID.substring(0, 8)), anyInt()));
     }
 
     /**
@@ -6108,7 +6118,7 @@ public class WifiMetricsTest extends WifiBaseTest {
                 eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(), anyInt(), anyInt(),
                 anyInt(), anyInt(), anyInt(), anyInt(), anyBoolean(), anyInt(), anyBoolean(),
                 anyBoolean(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
-                eq(TEST_UID), anyInt(), anyLong(), anyLong(), eq(0)),
+                eq(TEST_UID), anyInt(), anyLong(), anyLong(), eq(0), eq(null), anyInt()),
                 times(0));
     }
 
@@ -6124,8 +6134,8 @@ public class WifiMetricsTest extends WifiBaseTest {
                 eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(), anyInt(), anyInt(),
                 anyInt(), anyInt(), anyInt(), anyInt(), anyBoolean(), anyInt(), anyBoolean(),
                 anyBoolean(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
-                eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0)),
-                times(0));
+                eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0), eq(null),
+                anyInt()), times(0));
     }
 
     @Test
@@ -6157,8 +6167,8 @@ public class WifiMetricsTest extends WifiBaseTest {
                 eq(0), eq(true), eq(false), eq(1), eq(TEST_CONNECTION_FAILURE_STATUS_CODE),
                 anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), eq(TEST_UID),
                 eq(TEST_CANDIDATE_FREQ),
-                eq(WIFI_CONNECTING_DURATION_MS), eq(WIFI_CONNECTING_DURATION_MS), eq(0)),
-                times(1));
+                eq(WIFI_CONNECTING_DURATION_MS), eq(WIFI_CONNECTING_DURATION_MS), eq(0), eq(null),
+                anyInt()), times(1));
     }
 
     @Test
@@ -6194,7 +6204,7 @@ public class WifiMetricsTest extends WifiBaseTest {
                 eq(true),
                 eq(0),  eq(true), eq(true), eq(1), eq(TEST_CONNECTION_FAILURE_STATUS_CODE),
                 anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), eq(TEST_UID),
-                eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0)),
+                eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0), eq(null), anyInt()),
                 times(1));
     }
 
@@ -6220,7 +6230,8 @@ public class WifiMetricsTest extends WifiBaseTest {
                 eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__AUTOCONNECT_BOOT),
                 anyBoolean(), anyInt(), anyBoolean(), anyBoolean(), anyInt(),
                 eq(TEST_CONNECTION_FAILURE_STATUS_CODE), anyInt(), anyInt(), anyInt(), anyInt(),
-                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0)));
+                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0),
+                eq(null), anyInt()));
 
         mWifiMetrics.startConnectionEvent(TEST_IFACE_NAME, createComplexWifiConfig(),
                 "RED", WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE, false,
@@ -6243,16 +6254,21 @@ public class WifiMetricsTest extends WifiBaseTest {
                 anyBoolean(), anyInt(), anyBoolean(), anyBoolean(), anyInt(),
                 eq(TEST_CONNECTION_FAILURE_STATUS_CODE), anyInt(), anyInt(), anyInt(), anyInt(),
                 anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(
-                        WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__DISCONNECT_NEW_CONNECTION_USER))); // NOLINT
+                        WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__DISCONNECT_NEW_CONNECTION_USER), // NOLINT
+                        eq(null), anyInt()));
 
         WifiConfiguration configOtherNetwork = createComplexWifiConfig();
         configOtherNetwork.networkId = 21;
         configOtherNetwork.SSID = "OtherNetwork";
+        ScanResult otherNetworkCandidate =
+                configOtherNetwork.getNetworkSelectionStatus().getCandidate();
+        otherNetworkCandidate.BSSID = TEST_UNIVERSAL_BSSID;
+
         mWifiMetrics.setNominatorForNetwork(configOtherNetwork.networkId,
                 WifiMetricsProto.ConnectionEvent.NOMINATOR_SAVED);
 
         mWifiMetrics.startConnectionEvent(TEST_IFACE_NAME, configOtherNetwork,
-                "RED", WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE, false,
+                TEST_UNIVERSAL_BSSID, WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE, false,
                 WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__ROLE__ROLE_CLIENT_PRIMARY, TEST_UID);
 
         mWifiMetrics.endConnectionEvent(TEST_IFACE_NAME,
@@ -6270,15 +6286,19 @@ public class WifiMetricsTest extends WifiBaseTest {
                 anyBoolean(), anyInt(), anyBoolean(), anyBoolean(), anyInt(),
                 eq(TEST_CONNECTION_FAILURE_STATUS_CODE), anyInt(), anyInt(), anyInt(), anyInt(),
                 anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(
-                        WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__DISCONNECT_NEW_CONNECTION_OTHERS))); // NOLINT
+                        WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__DISCONNECT_NEW_CONNECTION_OTHERS), // NOLINT
+                        eq(TEST_UNIVERSAL_BSSID.substring(0, 8)), anyInt()));
 
         WifiConfiguration config = createComplexWifiConfig();
         config.networkId = 42;
+        ScanResult candidate = config.getNetworkSelectionStatus().getCandidate();
+        candidate.BSSID = TEST_LOCAL_BSSID;
+
         mWifiMetrics.setNominatorForNetwork(config.networkId,
                 WifiMetricsProto.ConnectionEvent.NOMINATOR_MANUAL);
 
         mWifiMetrics.startConnectionEvent(TEST_IFACE_NAME, config,
-                "GREEN", WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE, false,
+                TEST_LOCAL_BSSID, WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE, false,
                 WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__ROLE__ROLE_CLIENT_PRIMARY, TEST_UID);
 
         mWifiMetrics.endConnectionEvent(TEST_IFACE_NAME,
@@ -6293,7 +6313,62 @@ public class WifiMetricsTest extends WifiBaseTest {
                 eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__MANUAL),
                 anyBoolean(), anyInt(), anyBoolean(), anyBoolean(), anyInt(),
                 eq(TEST_CONNECTION_FAILURE_STATUS_CODE), anyInt(), anyInt(), anyInt(), anyInt(),
-                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0)));
+                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0),
+                eq("RANDOM_MAC"), anyInt()));
+    }
+
+    @Test
+    public void testWifiConnectionResultAtomEmittedWithPreviouFirmwareAlertDisconnection() {
+        // Trigger 1st connection
+        mWifiMetrics.startConnectionEvent(TEST_IFACE_NAME, createComplexWifiConfig(),
+                "RED", WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE, false,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__ROLE__ROLE_CLIENT_PRIMARY, TEST_UID);
+
+        long connectionEndTimeMs = 1000;
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(connectionEndTimeMs);
+        mWifiMetrics.endConnectionEvent(TEST_IFACE_NAME,
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE, TEST_CANDIDATE_FREQ,
+                TEST_CONNECTION_FAILURE_STATUS_CODE);
+
+        long wifiDisconnectTimeMs = 2000;
+        when(mClock.getElapsedSinceBootMillis()).thenReturn(wifiDisconnectTimeMs);
+
+        // Trigger firmware alert
+        int firmwareAlertErrorCode = 1;
+        mWifiMetrics.logFirmwareAlert(TEST_IFACE_NAME, firmwareAlertErrorCode);
+        // Disconnect because of firmware alert
+        mWifiMetrics.reportNetworkDisconnect(TEST_IFACE_NAME, -1, 0, 0, 0);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__AUTOCONNECT_BOOT),
+                anyBoolean(), anyInt(), anyBoolean(), anyBoolean(), anyInt(),
+                eq(TEST_CONNECTION_FAILURE_STATUS_CODE), anyInt(), anyInt(), anyInt(), anyInt(),
+                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0),
+                eq(null), anyInt()));
+        // Trigger 2nd connection
+        mWifiMetrics.startConnectionEvent(TEST_IFACE_NAME, createComplexWifiConfig(),
+                "RED", WifiMetricsProto.ConnectionEvent.ROAM_ENTERPRISE, false,
+                WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__ROLE__ROLE_CLIENT_PRIMARY, TEST_UID);
+
+        mWifiMetrics.endConnectionEvent(TEST_IFACE_NAME,
+                WifiMetrics.ConnectionEvent.FAILURE_NONE,
+                WifiMetricsProto.ConnectionEvent.HLF_NONE,
+                WifiMetricsProto.ConnectionEvent.AUTH_FAILURE_NONE, TEST_CANDIDATE_FREQ,
+                TEST_CONNECTION_FAILURE_STATUS_CODE);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED), anyBoolean(),
+                anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__RECONNECT_SAME_NETWORK),
+                anyBoolean(), anyInt(), anyBoolean(), anyBoolean(), anyInt(),
+                eq(TEST_CONNECTION_FAILURE_STATUS_CODE), anyInt(), anyInt(), anyInt(), anyInt(),
+                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(),
+                eq(WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__DISCONNECT_FIRMWARE_ALERT), // NOLINT
+                eq(null), eq(firmwareAlertErrorCode)));
     }
 
     @Test
@@ -6576,7 +6651,8 @@ public class WifiMetricsTest extends WifiBaseTest {
                 eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__AUTOCONNECT_BOOT),
                 anyBoolean(), eq(10), anyBoolean(), anyBoolean(), anyInt(),
                 eq(TEST_CONNECTION_FAILURE_STATUS_CODE), anyInt(), anyInt(), anyInt(), anyInt(),
-                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0)));
+                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0),
+                eq(null), anyInt()));
 
         mWifiMetrics.reportNetworkDisconnect(TEST_IFACE_NAME, 0, 0, 0, 0);
 
@@ -6598,7 +6674,8 @@ public class WifiMetricsTest extends WifiBaseTest {
                 eq(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED__TRIGGER__RECONNECT_SAME_NETWORK),
                 anyBoolean(), eq(20), anyBoolean(), anyBoolean(), anyInt(),
                 eq(TEST_CONNECTION_FAILURE_STATUS_CODE), anyInt(), anyInt(), anyInt(), anyInt(),
-                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0)));
+                anyInt(), eq(TEST_UID), eq(TEST_CANDIDATE_FREQ), anyLong(), anyLong(), eq(0),
+                eq(null), anyInt()));
 
         mWifiMetrics.reportNetworkDisconnect(TEST_IFACE_NAME, 0, 0, 0, 0);
     }
@@ -7108,6 +7185,7 @@ public class WifiMetricsTest extends WifiBaseTest {
         when(networkDetail.getWifiMode()).thenReturn(InformationElementUtil.WifiMode.MODE_11BE);
         when(networkDetail.isRangingFrameProtectionRequired()).thenReturn(true);
         when(networkDetail.isSecureHeLtfSupported()).thenReturn(true);
+        when(networkDetail.isBssColorEnabled()).thenReturn(true);
 
         SecurityParams securityParams = mock(SecurityParams.class);
         when(config.getDefaultSecurityParams()).thenReturn(securityParams);
@@ -7161,13 +7239,15 @@ public class WifiMetricsTest extends WifiBaseTest {
                         eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__CHANNEL_WIDTH_MHZ__CHANNEL_WIDTH_160MHZ), // mChannelWidth
                         eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_PASN_SUPPORTED__TRI_STATE_TRUE),
                         eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_SECURE_HE_LTF_SUPPORTED__TRI_STATE_TRUE),
-                        eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_RANGING_FRAME_PROTECTION_REQUIRED__TRI_STATE_TRUE)));
+                        eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_RANGING_FRAME_PROTECTION_REQUIRED__TRI_STATE_TRUE),
+                        eq(true)));
 
         // Validate AP capabilities after roaming
         when(networkDetail.getApType6GHz()).thenReturn(
                 InformationElementUtil.ApType6GHz.AP_TYPE_6GHZ_INDOOR);
         when(networkDetail.isSecureHeLtfSupported()).thenReturn(false);
         when(networkDetail.isRangingFrameProtectionRequired()).thenReturn(false);
+        when(networkDetail.isBssColorEnabled()).thenReturn(false);
         mWifiMetrics.setConnectionScanDetail(TEST_IFACE_NAME, scanDetail);
         mWifiMetrics.onRoamComplete(TEST_IFACE_NAME);
 
@@ -7202,7 +7282,8 @@ public class WifiMetricsTest extends WifiBaseTest {
                         eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__CHANNEL_WIDTH_MHZ__CHANNEL_WIDTH_160MHZ), // mChannelWidth
                         eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_PASN_SUPPORTED__TRI_STATE_TRUE),
                         eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_SECURE_HE_LTF_SUPPORTED__TRI_STATE_FALSE),
-                        eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_RANGING_FRAME_PROTECTION_REQUIRED__TRI_STATE_FALSE)));
+                        eq(WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_RANGING_FRAME_PROTECTION_REQUIRED__TRI_STATE_FALSE),
+                        eq(false)));
     }
 
     @Test
@@ -7754,6 +7835,34 @@ public class WifiMetricsTest extends WifiBaseTest {
             assertEquals("Conversion failed for input type: " + inputType, expectedOutputType,
                     actualUsabilityPreambleType);
         }
+
+    }
+
+    @Test
+    public void testReportNl80211CommandResultWithNullMessage() {
+        /* null message */
+        GenericNetlinkMsg message = null;
+        mWifiMetrics.reportNl80211CommandResult(message,
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__SEND_NLMSG_NULL);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED,
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__COMMAND_ID__NL80211_CMD_UNSPECIFIED,
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__SEND_NLMSG_NULL));
+    }
+
+    @Test
+    public void testReportNl80211CommandResultSuccessfullyTrigger() {
+        /* Test an arbitrary CMD and reason combination */
+        GenericNetlinkMsg message = new GenericNetlinkMsg(NL80211_CMD_GET_INTERFACE,
+                NetlinkConstants.CTRL_ATTR_FAMILY_ID, NLM_F_REQUEST, 100);
+        mWifiMetrics.reportNl80211CommandResult(message,
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__SEND_FD_UNAVAILABLE);
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED,
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__COMMAND_ID__NL80211_CMD_GET_INTERFACE,
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__SEND_FD_UNAVAILABLE));
 
     }
 }

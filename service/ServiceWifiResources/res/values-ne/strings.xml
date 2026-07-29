@@ -93,7 +93,7 @@
     <string name="wifi_cannot_connect_with_randomized_mac_title" msgid="2344570489693915253">"<xliff:g id="SSID">%1$s</xliff:g> मा जडान गर्न सकिएन"</string>
     <string name="wifi_cannot_connect_with_randomized_mac_message" msgid="4834133226521813352">"गोपनीयता सेटिङ परिवर्तन गर्न ट्याप गरेर फेरि प्रयास गर्नुहोस्"</string>
     <string name="wifi_disable_mac_randomization_dialog_title" msgid="2054540994993681606">"गोपनीयतासम्बन्धी सेटिङ परिवर्तन गर्ने हो?"</string>
-    <string name="wifi_disable_mac_randomization_dialog_message" msgid="8874064864332248988">"जोड्नका लागि <xliff:g id="SSID">%1$s</xliff:g> ले तपाईंको डिभाइसको म्याक एड्रेस अर्थात् एउटा अद्वितीय पहिचानकर्ता प्रयोग गर्नु पर्ने हुन्छ। हाल, यो नेटवर्कमा लागू हुने तपाईंको गोपनीयतासम्बन्धी सेटिङले अनियमित पहिचानकर्ताको प्रयोग गर्छ। \n\nयो परिवर्तन गर्नाले वरपरका यन्त्रहरूलाई तपाईंको डिभाइसको स्थान ट्र्याक गर्न दिने सम्भावना हुन्छ।"</string>
+    <string name="wifi_disable_mac_randomization_dialog_message" msgid="8874064864332248988">"कनेक्ट गर्नका लागि <xliff:g id="SSID">%1$s</xliff:g> ले तपाईंको डिभाइसको MAC एड्रेस अर्थात् एउटा अद्वितीय आइडेन्टिफायर प्रयोग गर्नु पर्ने हुन्छ। हाल, यो नेटवर्कमा लागू हुने तपाईंको गोपनीयतासम्बन्धी सेटिङले अनियमित आइडेन्टिफायर प्रयोग गर्छ। \n\nतपाईंले यो परिवर्तन गर्नुभयो भने वरपरका डिभाइसहरूले तपाईंको डिभाइसको लोकेसन ट्र्याक गर्न सक्ने सम्भावना हुन्छ।"</string>
     <string name="wifi_disable_mac_randomization_dialog_confirm_text" msgid="6954419863076751626">"सेटिङ परिवर्तन गर्नुहोस्"</string>
     <string name="wifi_disable_mac_randomization_dialog_success" msgid="5849155828154391387">"सेटिङ अद्यावधिक गरियो। फेरि जोडी हेर्नुहोस्।"</string>
     <string name="wifi_disable_mac_randomization_dialog_failure" msgid="2894643619143813096">"गोपनीयता सेटिङ परिवर्तन गर्न सकिँदैन"</string>
@@ -147,7 +147,7 @@
     <string name="wifi_softap_auto_shutdown_timeout_expired_title" msgid="4896534374569504484">"हटस्पट निष्क्रिय पारिएको छ"</string>
     <string name="wifi_softap_auto_shutdown_timeout_expired_summary" msgid="7975476698140267728">"कुनै यन्त्र जोडिएको छैन। परिमार्जन गर्न ट्याप गर्नुहोस्।"</string>
     <string name="wifi_sim_required_title" msgid="2262227800991155459">"Wi-Fi डिस्कनेक्ट गरियो।"</string>
-    <string name="wifi_sim_required_message" msgid="284812212346125745">"<xliff:g id="SSID">%1$s</xliff:g> मा जोडिन <xliff:g id="CARRIER_NAME">%2$s</xliff:g> को SIM सम्मिलित गर्नुहोस्"</string>
+    <string name="wifi_sim_required_message" msgid="284812212346125745">"<xliff:g id="SSID">%1$s</xliff:g> मा जोडिन <xliff:g id="CARRIER_NAME">%2$s</xliff:g> को SIM इन्सर्ट गर्नुहोस्"</string>
     <string name="wifi_interface_priority_title" msgid="5117627874976875544">"<xliff:g id="APP">%1$s</xliff:g> कुनै नेटवर्किङ स्रोत प्रयोग गर्न चाहन्छ"</string>
     <string name="wifi_interface_priority_message" msgid="4253391172756140313">"यसले गर्दा <xliff:g id="APPS">%3$s</xliff:g> मा समस्या आउन सक्छ।"</string>
     <string name="wifi_interface_priority_message_plural" msgid="8178086373318831859">"यसले गर्दा यी एपहरूमा समस्या आउन सक्छ: <xliff:g id="APPS">%3$s</xliff:g>।"</string>
@@ -218,4 +218,11 @@
     <string name="wifi_network_switch_dialog_title_bad_internet" msgid="6013385270249705547">"<xliff:g id="SSID_0">%1$s</xliff:g> न्यून गुणस्तरको छ। नेटवर्क बदलेर <xliff:g id="SSID_1">%2$s</xliff:g> प्रयोग गर्न थाल्ने हो?"</string>
     <string name="wifi_network_switch_dialog_positive_button" msgid="7845507995422722454">"बदल्नुहोस्"</string>
     <string name="wifi_network_switch_dialog_negative_button" msgid="1496665895689498806">"नबदल्नुहोस्"</string>
+    <string name="wifi_disconnect_dialog_title" msgid="7541989406466882747">"<xliff:g id="APP_NAME">%1$s</xliff:g> बाट अनलिंक गर्ने हो?"</string>
+    <string name="wifi_disconnect_dialog_message" msgid="5116841532118842227">"तपाईंले यो नेटवर्कबाट डिस्कनेक्ट गर्नुभयो भने <xliff:g id="APP_NAME">%1$s</xliff:g> डिस्कनेक्ट हुने छ।"</string>
+    <string name="wifi_disconnect_dialog_positive_button" msgid="1193888906224230855">"डिस्कनेक्ट गर्नुहोस्"</string>
+    <string name="wifi_disconnect_dialog_negative_button" msgid="5075682597077355859">"रद्द गर्नुहोस्"</string>
+    <string name="wifi_disconnect_dialog_new_connection_title" msgid="6276398076311281426">"अर्कै Wi‑Fi नेटवर्कमा कनेक्ट गर्ने हो?"</string>
+    <string name="wifi_disconnect_dialog_new_connection_message" msgid="2830348590173029295">"तपाईंले <xliff:g id="SSID">%2$s</xliff:g> मा कनेक्ट गर्नुभयो भने <xliff:g id="APP_NAME">%1$s</xliff:g> डिस्कनेक्ट हुने छ।"</string>
+    <string name="wifi_disconnect_dialog_new_connection_positive_button" msgid="4891994857934666730">"कनेक्ट गर्नुहोस्"</string>
 </resources>

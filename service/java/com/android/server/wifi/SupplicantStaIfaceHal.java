@@ -17,6 +17,7 @@ package com.android.server.wifi;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.content.Context;
 import android.net.MacAddress;
 import android.net.wifi.MscsParams;
@@ -30,8 +31,10 @@ import android.util.Log;
 import android.util.Range;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.wifi.rtt.SupplicantWifiRttController;
 import com.android.server.wifi.usd.UsdRequestManager;
 
+import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.net.InetAddress;
@@ -124,6 +127,7 @@ public class SupplicantStaIfaceHal {
     }
 
     public static class StaIfaceReasonCode {
+        public static final int RESERVED = 0;
         public static final int UNSPECIFIED = 1;
         public static final int PREV_AUTH_NOT_VALID = 2;
         public static final int DEAUTH_LEAVING = 3;
@@ -188,6 +192,8 @@ public class SupplicantStaIfaceHal {
 
         public static String toString(int code) {
             switch(code) {
+                case RESERVED:
+                    return "RESERVED";
                 case UNSPECIFIED:
                     return "UNSPECIFIED";
                 case PREV_AUTH_NOT_VALID:
@@ -847,12 +853,22 @@ public class SupplicantStaIfaceHal {
     }
 
     /**
+     * Check whether the supplicant HAL service is using AIDL mainline supplicant implementation.
+     *
+     * @return true if the mainline supplicant service is being used, false otherwise.
+     */
+    public boolean isUsingAidlMainlineSupplicantService() {
+        return mStaIfaceHal != null
+                && mStaIfaceHal instanceof SupplicantStaIfaceHalAidlMainlineImpl;
+    }
+
+    /**
      * Check whether the HAL service is using AIDL.
      *
      * @return true if the AIDL service is being used, false otherwise.
      */
     public boolean isAidlService() {
-        return mStaIfaceHal != null && mStaIfaceHal instanceof SupplicantStaIfaceHalAidlImpl;
+        return mStaIfaceHal != null && mStaIfaceHal instanceof SupplicantStaIfaceHalAidlVendorImpl;
     }
 
     /**
@@ -862,7 +878,7 @@ public class SupplicantStaIfaceHal {
      * @return true if the AIDL service is available and >= the expected version, false otherwise.
      */
     public boolean isAidlServiceVersionAtLeast(int expectedVersion) {
-        return isAidlService() && ((SupplicantStaIfaceHalAidlImpl) mStaIfaceHal)
+        return isAidlService() && ((SupplicantStaIfaceHalAidlVendorImpl) mStaIfaceHal)
                 .isServiceVersionAtLeast(expectedVersion);
     }
 
@@ -904,14 +920,22 @@ public class SupplicantStaIfaceHal {
     @VisibleForTesting
     protected ISupplicantStaIfaceHal createStaIfaceHalMockable() {
         synchronized (mLock) {
-            // Prefer AIDL implementation if service is declared.
-            if (SupplicantStaIfaceHalAidlImpl.serviceDeclared()) {
-                Log.i(TAG, "Initializing SupplicantStaIfaceHal using AIDL implementation.");
-                return new SupplicantStaIfaceHalAidlImpl(mContext, mWifiMonitor,
+            // Prefer AIDL Mainline implementation if service is declared.
+            if (SupplicantStaIfaceHalAidlMainlineImpl.isServiceAvailable(mContext)) {
+                Log.i(TAG, "Initializing SupplicantStaIfaceHal using AIDL Mainline implementation");
+                return new SupplicantStaIfaceHalAidlMainlineImpl(mContext, mWifiMonitor,
+                        mEventHandler, mClock, mWifiMetrics, mWifiGlobals, mSsidTranslator,
+                        mWifiInjector);
+
+            } else if (SupplicantStaIfaceHalAidlVendorImpl.serviceDeclared()) {
+                // Fallback to the AIDL Vendor implementation if service is declared.
+                Log.i(TAG, "Initializing SupplicantStaIfaceHal using AIDL Vendor implementation.");
+                return new SupplicantStaIfaceHalAidlVendorImpl(mContext, mWifiMonitor,
                         mEventHandler, mClock, mWifiMetrics, mWifiGlobals, mSsidTranslator,
                         mWifiInjector);
 
             } else if (SupplicantStaIfaceHalHidlImpl.serviceDeclared()) {
+                // Fallback to the HIDL implementation if service is declared.
                 Log.i(TAG, "Initializing SupplicantStaIfaceHal using HIDL implementation.");
                 return new SupplicantStaIfaceHalHidlImpl(mContext, mWifiMonitor, mFrameworkFacade,
                         mEventHandler, mClock, mWifiMetrics, mWifiGlobals, mSsidTranslator);
@@ -2415,6 +2439,19 @@ public class SupplicantStaIfaceHal {
         mStaIfaceHal.disableMscs(ifaceName);
     }
 
+    /**
+     * See comments for {@link ISupplicantStaIfaceHal#createRttController(String)}
+     */
+    @Nullable
+    public SupplicantWifiRttController createRttController(@NonNull String ifaceName) {
+        String methodStr = "createRttController";
+        if (mStaIfaceHal == null) {
+            handleNullHal(methodStr);
+            return null;
+        }
+        return mStaIfaceHal.createRttController(ifaceName);
+    }
+
     private boolean handleNullHal(String methodStr) {
         Log.e(TAG, "Cannot call " + methodStr + " because HAL object is null.");
         return false;
@@ -2435,12 +2472,15 @@ public class SupplicantStaIfaceHal {
         public final int maxNumPublishSessions;
         /** Maximum number of allowed subscribe sessions. */
         public final int maxNumSubscribeSessions;
+        /** Whether proximity ranging is enabled on this device. */
+        public final boolean isProximityRangingSupported;
 
         public UsdCapabilitiesInternal(boolean isUsdPublisherSupported,
                 boolean isUsdSubscriberSupported,
                 int maxLocalSsiLengthBytes, int maxServiceNameLengthBytes,
                 int maxMatchFilterLengthBytes,
-                int maxNumPublishSessions, int maxNumSubscribeSessions) {
+                int maxNumPublishSessions, int maxNumSubscribeSessions,
+                boolean isProximityRangingSupported) {
             this.isUsdPublisherSupported = isUsdPublisherSupported;
             this.isUsdSubscriberSupported = isUsdSubscriberSupported;
             this.maxLocalSsiLengthBytes = maxLocalSsiLengthBytes;
@@ -2448,6 +2488,7 @@ public class SupplicantStaIfaceHal {
             this.maxMatchFilterLengthBytes = maxMatchFilterLengthBytes;
             this.maxNumPublishSessions = maxNumPublishSessions;
             this.maxNumSubscribeSessions = maxNumSubscribeSessions;
+            this.isProximityRangingSupported = isProximityRangingSupported;
         }
 
         public UsdCapabilitiesInternal() {
@@ -2458,6 +2499,7 @@ public class SupplicantStaIfaceHal {
             this.maxMatchFilterLengthBytes = 0;
             this.maxNumPublishSessions = 0;
             this.maxNumSubscribeSessions = 0;
+            this.isProximityRangingSupported = false;
         }
     }
 
@@ -2576,6 +2618,19 @@ public class SupplicantStaIfaceHal {
             }
             return mStaIfaceHal.sendUsdMessage(interfaceName, ownId, peerId, peerMacAddress,
                     message);
+        }
+    }
+
+    /**
+     * Dump information about the internal state
+     *
+     * @param pw PrintWriter to write the dump to
+     */
+    protected void dump(PrintWriter pw) {
+        pw.println("Dump of " + TAG);
+        pw.println("Implemented: " + (mStaIfaceHal != null));
+        if (mStaIfaceHal != null) {
+            mStaIfaceHal.dump(pw);
         }
     }
 }

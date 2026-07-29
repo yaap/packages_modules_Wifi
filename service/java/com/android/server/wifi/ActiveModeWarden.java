@@ -57,6 +57,7 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiManager.DeviceMobilityState;
 import android.net.wifi.WifiScanner;
+import android.net.wifi.util.Environment;
 import android.net.wifi.util.WifiResourceCache;
 import android.os.BatteryStatsManager;
 import android.os.Build;
@@ -91,6 +92,7 @@ import com.android.server.wifi.ActiveModeManager.ClientConnectivityRole;
 import com.android.server.wifi.ActiveModeManager.ClientInternetConnectivityRole;
 import com.android.server.wifi.ActiveModeManager.ClientRole;
 import com.android.server.wifi.ActiveModeManager.SoftApRole;
+import com.android.server.wifi.rtt.RttServiceImpl;
 import com.android.server.wifi.util.ApConfigUtil;
 import com.android.server.wifi.util.LastCallerInfoManager;
 import com.android.server.wifi.util.NativeUtil;
@@ -161,6 +163,12 @@ public class ActiveModeWarden {
     private final RemoteCallbackList<IWifiStateChangedListener> mWifiStateChangedListeners =
             new RemoteCallbackList<>();
 
+    /**
+     * Current logged in user ID.
+     */
+    private int mCurrentUserId = UserHandle.SYSTEM.getIdentifier();
+    private boolean mIsHandlingUserSwitchOrStop = false;
+    private boolean mIsPendingUserUnlock = false;
     private boolean mIsMultiplePrimaryBugreportTaken = false;
     private boolean mIsShuttingdown = false;
     private boolean mVerboseLoggingEnabled = false;
@@ -223,6 +231,10 @@ public class ActiveModeWarden {
                 if (mWifiState.get() != newState) {
                     mWifiState.set(newState);
                     notifyRemoteWifiStateChangedListeners();
+                    RttServiceImpl rttService = mWifiInjector.getRttServiceImpl();
+                    if (rttService != null) {
+                        rttService.setWifiState(newState);
+                    }
                 }
                 break;
             default:
@@ -268,16 +280,6 @@ public class ActiveModeWarden {
         return mWifiState.get();
     }
 
-    /**
-     * Notify changes in PowerManager#isDeviceIdleMode
-     */
-    public void onIdleModeChanged(boolean isIdle) {
-        // only client mode managers need to get notified for now to consider enabling/disabling
-        // firmware roaming
-        for (ClientModeManager cmm : mClientModeManagers) {
-            cmm.onIdleModeChanged(isIdle);
-        }
-    }
 
     /**
      * See {@link WifiManager#addWifiStateChangedListener(Executor, WifiStateChangedListener)}
@@ -475,10 +477,10 @@ public class ActiveModeWarden {
 
         registerPrimaryClientModeManagerChangedCallback(
                 (prevPrimaryClientModeManager, newPrimaryClientModeManager) -> {
-                    // TODO (b/181363901): We can always propagate the external scorer to all
-                    // ClientModeImpl instances. WifiScoreReport already handles skipping external
-                    // scorer notification for local only & restricted STA + STA use-cases. For MBB
-                    // use-case, we may want the external scorer to be notified.
+                    // The external scorer is propagated only to the primary ClientModeManager.
+                    // For the Make-Before-Break (MBB) use-case, the external scorer could also
+                    // be notified for other ClientModeManager instances. See b/181363901 for
+                    // context.
                     if (prevPrimaryClientModeManager != null) {
                         prevPrimaryClientModeManager.clearWifiConnectedNetworkScorer();
                     }
@@ -662,7 +664,14 @@ public class ActiveModeWarden {
                             packageName, Build.VERSION_CODES.S, uid);
         }
         if (clientRole == ROLE_CLIENT_SECONDARY_TRANSIENT) {
-            return mResourceCache.getBoolean(
+            // When Voip is in progress, do not use MBB since since will result in
+            // call drop if the carrier does not support MBB transition.
+            boolean isWifiVoipOn = false;
+            WifiVoipDetector wifiVoipDetector = mWifiInjector.getWifiVoipDetector();
+            if (wifiVoipDetector != null && SdkLevel.isAtLeastV()) {
+                isWifiVoipOn = wifiVoipDetector.isWifiVoipOn();
+            }
+            return !isWifiVoipOn && mResourceCache.getBoolean(
                     R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled);
         }
         if (clientRole == ROLE_CLIENT_SECONDARY_LONG_LIVED) {
@@ -771,16 +780,16 @@ public class ActiveModeWarden {
                 new IntentFilter(LocationManager.MODE_CHANGED_ACTION), null, mHandler);
         boolean trackEmergencyCallState = mResourceCache.getBoolean(
                 R.bool.config_wifi_turn_off_during_emergency_call);
-        if (mFeatureFlags.monitorIntentForAllUsers()) {
+        if (mFeatureFlags.monitorIntentForAllUsers() && Environment.isSdkAtLeastC()) {
             mContext.registerReceiverForAllUsers(airplaneChangedReceiver,
-                    new IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED), null, mHandler);
+                    new IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED), null, null);
             mContext.registerReceiverForAllUsers(emergencyCallbackModeChangedReceiver,
                     new IntentFilter(TelephonyManager.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED),
-                    null, mHandler);
+                    null, null);
             if (trackEmergencyCallState) {
                 mContext.registerReceiverForAllUsers(emergencyCallStateChangedReceiver,
                         new IntentFilter(TelephonyManager.ACTION_EMERGENCY_CALL_STATE_CHANGED),
-                        null, mHandler);
+                        null, null);
             }
         } else {
             mContext.registerReceiver(airplaneChangedReceiver,
@@ -905,6 +914,44 @@ public class ActiveModeWarden {
     /** Stop SoftAp. */
     public void stopSoftAp(int mode) {
         mWifiController.sendMessage(WifiController.CMD_SET_AP, 0, mode);
+    }
+
+    /** User has been switched. */
+    public void handleUserSwitch(int userId) {
+        if (userId == mCurrentUserId) {
+            Log.w(TAG, "User already in foreground " + userId);
+            return;
+        }
+        mCurrentUserId = userId;
+        mIsPendingUserUnlock = true;
+        mWifiController.sendMessage(WifiController.CMD_USER_SWITCH);
+        // When switch to HSU, the system won't sent unlock since it is always in unlock status.
+        // Send UNLOCK to make sure wifi can be restored.
+        if (mUserManager.isUserUnlockingOrUnlocked(UserHandle.of(mCurrentUserId))) {
+            mIsPendingUserUnlock = false;
+            mWifiController.sendMessage(WifiController.CMD_USER_UNLOCK);
+        }
+    }
+
+    /** User is stop. */
+    public void handleUserStop(int userId) {
+        if (userId != mCurrentUserId) {
+            Log.e(TAG, "Ignore user stop for non current user " + userId);
+            return;
+        }
+        mWifiController.sendMessage(WifiController.CMD_USER_STOP);
+    }
+
+    /** User has been unlocked. */
+    public void handleUserUnlock(int userId) {
+        if (userId != mCurrentUserId) {
+            Log.e(TAG, "Ignore user unlock for non current user " + userId);
+            return;
+        }
+        if (mIsPendingUserUnlock) {
+            mIsPendingUserUnlock = false;
+            mWifiController.sendMessage(WifiController.CMD_USER_UNLOCK);
+        }
     }
 
     /**
@@ -1963,6 +2010,9 @@ public class ActiveModeWarden {
         static final int CMD_REQUEST_ADDITIONAL_CLIENT_MODE_MANAGER  = BASE + 26;
         static final int CMD_REMOVE_ADDITIONAL_CLIENT_MODE_MANAGER   = BASE + 27;
         static final int CMD_SATELLITE_MODE_CHANGED                  = BASE + 28;
+        static final int CMD_USER_SWITCH                             = BASE + 29;
+        static final int CMD_USER_STOP                               = BASE + 30;
+        static final int CMD_USER_UNLOCK                             = BASE + 31;
 
         private final EnabledState mEnabledState;
         private final DisabledState mDisabledState;
@@ -2050,6 +2100,12 @@ public class ActiveModeWarden {
                     return "CMD_WIFI_TOGGLED";
                 case CMD_SATELLITE_MODE_CHANGED:
                     return "CMD_SATELLITE_MODE_CHANGED";
+                case CMD_USER_SWITCH:
+                    return "CMD_USER_SWITCH";
+                case CMD_USER_STOP:
+                    return "CMD_USER_STOP";
+                case CMD_USER_UNLOCK:
+                    return "CMD_USER_UNLOCK";
                 case RunnerState.STATE_ENTER_CMD:
                     return "Enter";
                 case RunnerState.STATE_EXIT_CMD:
@@ -2303,6 +2359,16 @@ public class ActiveModeWarden {
                     log("Airplane mode toggled");
                     if (!mSettingsStore.shouldWifiRemainEnabledWhenApmEnabled()) {
                         log("Wifi disabled on APM, disable wifi");
+                        if (mFeatureFlags.localOnlyDisconnectReason()) {
+                            WifiNetworkFactory wifiNetworkFactory =
+                                    mWifiInjector.getWifiNetworkFactory();
+                            if (wifiNetworkFactory != null) {
+                                wifiNetworkFactory.onDisconnectionExpected(
+                                        WifiManager
+                                                .STATUS_LOCAL_ONLY_DISCONNECTION_AIRPLANE_MODE_ON,
+                                        true);
+                            }
+                        }
                         shutdownWifi();
                         // onStopped will move the state machine to "DisabledState".
                         mLastCallerInfoManager.put(WifiManager.API_WIFI_ENABLED, Process.myTid(),
@@ -2336,6 +2402,9 @@ public class ActiveModeWarden {
                     case CMD_RECOVERY_RESTART_WIFI_CONTINUE:
                     case CMD_DEFERRED_RECOVERY_RESTART_WIFI:
                     case CMD_REMOVE_ADDITIONAL_CLIENT_MODE_MANAGER:
+                    case CMD_USER_UNLOCK:
+                    case CMD_USER_STOP:
+                    case CMD_USER_SWITCH:
                         break;
                     case CMD_REQUEST_ADDITIONAL_CLIENT_MODE_MANAGER:
                         AdditionalClientModeManagerRequestInfo requestInfo =
@@ -2431,6 +2500,7 @@ public class ActiveModeWarden {
                 if (hasAnyModeManager()) {
                     Log.e(TAG, "Entered DisabledState, but has active mode managers");
                 }
+                mIsHandlingUserSwitchOrStop = false;
             }
 
             @Override
@@ -2445,6 +2515,10 @@ public class ActiveModeWarden {
                     case CMD_WIFI_TOGGLED:
                     case CMD_SCAN_ALWAYS_MODE_CHANGED:
                         handleStaToggleChangeInDisabledState((WorkSource) msg.obj);
+                        break;
+                    case CMD_USER_UNLOCK:
+                        handleStaToggleChangeInDisabledState(
+                                new WorkSource(Process.WIFI_UID));
                         break;
                     case CMD_SET_AP:
                         // note: CMD_SET_AP is handled/dropped in ECM mode - will not start here
@@ -2605,7 +2679,11 @@ public class ActiveModeWarden {
                     requestInfo.listener.onAnswer(primaryManager);
                     return;
                 }
+                boolean allowSameBssidConnection =
+                        mWifiGlobals.isMultiInternetSameBssidConnectionAllowed()
+                        && requestInfo.clientRole == ROLE_CLIENT_SECONDARY_LONG_LIVED;
                 ConcreteClientModeManager cmmForSameBssid =
+                        allowSameBssidConnection ? null :
                         findAnyClientModeManagerConnectingOrConnectedToBssid(
                                 requestInfo.ssid, requestInfo.bssid);
                 if (cmmForSameBssid != null) {
@@ -2886,6 +2964,17 @@ public class ActiveModeWarden {
                         mWifiInjector.getSelfRecovery().onRecoveryCompleted();
                         break;
                     }
+                    case CMD_USER_STOP:
+                    case CMD_USER_SWITCH:
+                        mIsHandlingUserSwitchOrStop = true;
+                        shutdownWifi();
+                        break;
+                    case CMD_USER_UNLOCK:
+                        if (mIsHandlingUserSwitchOrStop) {
+                            log("defer User unlock since wifi shutdown in processing");
+                            deferMessage(msg);
+                        }
+                        break;
                     default:
                         return NOT_HANDLED;
                 }

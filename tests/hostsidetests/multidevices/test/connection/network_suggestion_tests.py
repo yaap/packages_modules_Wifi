@@ -2,20 +2,33 @@
 
 import json
 import logging
-from typing import override
 
 from mobly import base_test
-from mobly import test_runner
 from mobly import records
+from mobly import test_runner
 from mobly.controllers import android_device
+from mobly.snippet import errors
 
-from mobly.controllers.wifi import openwrt_device
-from mobly.controllers.wifi.lib import wifi_configs
-
+from connection import ap_helper
 from connection import constants
 from connection import test_utils
 from connection import ui_action_utils
 from connection import wifi_utils
+import wifi_test_utils
+
+_ERROR_MSG_NETWORK_CONNECT_FAILED = (
+    'DUT failed to connect to Wi-Fi via network suggestion. Please check:\n'
+    '1. Verify that SSID "{wifi_ssid}" and password "{wifi_pwd}" are correct'
+    ' in "WifiConnectionTestbed.yaml".\n'
+    '2. Ensure there is no other Wi-Fi network sharing the same SSID but a'
+    ' different password.\n'
+    '3. Review device logs to determine why the DUT failed to connect to the'
+    ' network.'
+)
+
+
+class NetworkSuggestionFailedError(Exception):
+  """Raised when the DUT failed to connect to Wi-Fi via network suggestion."""
 
 
 class NetworkSuggestionTests(base_test.BaseTestClass):
@@ -26,9 +39,8 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
     2. For all test cases, we run a snippet app in foreground calling wifi Apis.
   """
 
-  openwrt: openwrt_device.OpenWrtDevice
   ad: android_device.AndroidDevice
-  wifi_info: wifi_configs.WiFiConfig | None
+  ap_helper: ap_helper.ApHelper
 
   _original_wifi_scan_throttle_state: bool | None = None
 
@@ -42,6 +54,8 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
     test_utils.drop_shell_permission(ad, ensure_mbs_initialized=True)
     test_utils.enable_wifi_verbose_logging(ad)
     test_utils.set_screen_on_and_unlock(ad)
+    # Make sure location mode is on before triggering any Wi-Fi scan.
+    test_utils.set_location_mode_on(ad)
 
     # Disable wifi scan throttle.
     self._original_wifi_scan_throttle_state = None
@@ -53,21 +67,38 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       # Set this attribute to revert this change in teardown_class phase.
       self._original_wifi_scan_throttle_state = current_wifi_scan_throttle_state
 
-  @override
+    test_utils.logging_device_model(ad)
+
   def setup_class(self):
-    self.openwrt = self.register_controller(openwrt_device)[0]
-    # AP setup steps.
-    if self.user_params.get('reboot_ap', 'false') == 'true':
-      self.openwrt.reboot()
     self.ad = self.register_controller(android_device)[0]
     self._setup_android_device(self.ad)
+
+    self.ap_helper = ap_helper.ApHelper()
+    use_programmable_ap = wifi_test_utils.convert_str_to_bool(
+        self.user_params.get(
+            'use_programmable_ap', constants.USE_PROGRAMMABLE_AP_DEFAULT
+        )
+    )
+    self.ap_helper.initialize(
+        test_class_obj=self,
+        use_programmable_ap=use_programmable_ap,
+        ad=self.ad,
+    )
+
     # request_networkid support managing multiple network sessions.
     # But we only need one wifi connection in each test
     self.request_networkid = '0'
-    test_utils.logging_device_model(self.ad)
-    test_utils.set_location_mode_on(self.ad)
 
-  @override
+    self._close_button_of_no_device_found_dialog = self.user_params.get(
+        constants.KEY_CLOSE_BUTTON_OF_NO_DEVICE_FOUND_DIALOG, None
+    )
+    self._close_button_of_something_came_up_dialog = self.user_params.get(
+        constants.KEY_CLOSE_BUTTON_OF_SOMETHING_CAME_UP_DIALOG, None
+    )
+    self._allow_button_of_adding_suggestion_dialog = self.user_params.get(
+        constants.KEY_ALLOW_BUTTON_OF_ADDING_SUGGESTION_DIALOG, None
+    )
+
   def teardown_class(self):
     if self._original_wifi_scan_throttle_state is not None:
       self.ad.wifi.wifiSetScanThrottleState(
@@ -75,7 +106,6 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       )
       self._original_wifi_scan_throttle_state = None
 
-  @override
   def setup_test(self) -> None:
     self.ad.wifi.wifiFactoryReset()
     self.ad.wifi.wifiToggleEnable()
@@ -90,14 +120,17 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
     ui_action_utils.close_failed_to_connect_wifi_dialog(
         self.ad,
         self.current_test_info.output_path,
+        button_something_came_up=self._close_button_of_something_came_up_dialog,
+        button_no_device_found=self._close_button_of_no_device_found_dialog,
     )
     ui_action_utils.return_home_page(self.ad)
     # set the wifi snippet to foreground
     self.ad.wifi.utilityBringToForeground()
 
-  @override
   def teardown_test(self) -> None:
-    self.openwrt.stop_all_wifi()
+    self.ap_helper.stop_programmable_ap()
+    # Pass an empty list to remove added all network suggestions.
+    self.ad.wifi.wifiRemoveNetworkSuggestions([])
     self.ad.wifi.wifiClearConfiguredNetworks()
     self.ad.wifi.connectivityUnregisterNetwork(self.request_networkid)
     self.ad.wifi.wifiRemoveSuggestionConnectionStatusListener()
@@ -105,7 +138,6 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
     self.ad.wifi.wifiRemoveNetworkSuggestionPostConnectionReceiver()
     self.ad.services.create_output_excerpts_all(self.current_test_info)
 
-  @override
   def on_fail(self, record: records.TestResultRecord) -> None:
     self.ad.take_bug_report(destination=self.current_test_info.output_path)
 
@@ -128,20 +160,24 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       2. Verify the Android device should disconnect to the Wi-Fi AP after
       removing the network suggestion.
     """
-    # Start a Wi-Fi AP with a randomly generated SSID and BSSID.
-    wifi_info = wifi_utils.start_wpa2_wifi(self.openwrt)
+    wifi_info = self.ap_helper.get_or_start_wifi()
 
     # DUT scans for the WiFi and verify the WiFi is discovered.
-    wifi_utils.wait_for_expected_wifi_discovered(
+    scan_result = wifi_utils.wait_for_expected_wifi_discovered(
         self.ad, wifi_info.ssid, wifi_info.bssid
     )
 
-    network_suggestion = constants.NetworkSuggestion(
+    # Create network suggestion
+    network_suggestion = wifi_utils.create_network_suggestion(
         ssid=wifi_info.ssid,
-        psk=wifi_info.password,
-        is_hidden_ssid=False,
+        password=wifi_info.password,
+        scan_result=scan_result,
         is_metered=False,
+        is_hidden_ssid=False,
     )
+
+    is_bssid_set = False
+
     network_suggestion_array = [network_suggestion.to_dict()]
     network_request = constants.NetworkRequest(
         transport_type=constants.TransportType.TRANSPORT_WIFI,
@@ -154,6 +190,7 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
         network_suggestion_array,
         network_request,
         hsv_output_path_when_failed=self.current_test_info.output_path,
+        allow_button_text=self._allow_button_of_adding_suggestion_dialog,
     )
     logging.info('wifi network suggestion added.')
 
@@ -166,13 +203,23 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       self.ad.wifi.utilityDropShellPermission()
 
     # Verify the network is connected.
-    wifi_utils.wait_until_network_expected_callback(
-        network_callback, constants.NetworkCallback.ON_AVAILABLE
-    )
+    try:
+      wifi_utils.wait_until_network_expected_callback(
+          network_callback, constants.NetworkCallback.ON_AVAILABLE
+      )
+    except errors.CallbackHandlerTimeoutError as e:
+      raise NetworkSuggestionFailedError(
+          _ERROR_MSG_NETWORK_CONNECT_FAILED.format(
+              wifi_ssid=wifi_info.ssid,
+              wifi_pwd=wifi_info.password,
+          )
+      ) from e
     logging.info('wifi network connected.')
 
     # Verify the connected network is expected Wifi network.
-    wifi_utils.assert_connecting_with_expected_connection(self.ad, wifi_info)
+    wifi_utils.assert_connecting_with_expected_connection(
+        self.ad, wifi_info, check_bssid=is_bssid_set
+    )
     logging.info('connected network is expected %s', wifi_info.ssid)
 
     # Remove the network suggestion and verify the process finished.
@@ -200,21 +247,25 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       2. Verify the Android device should disconnect to the Wi-Fi AP after
       removing the network suggestion.
     """
-    wifi_info = wifi_utils.start_wpa2_wifi(self.openwrt)
+    wifi_info = self.ap_helper.get_or_start_wifi()
 
     # DUT scans for the WiFi and verify the WiFi is discovered.
-    wifi_utils.wait_for_expected_wifi_discovered(
+    scan_result = wifi_utils.wait_for_expected_wifi_discovered(
         self.ad, wifi_info.ssid, wifi_info.bssid
     )
 
-    # Set up the network suggestion parameters.
-    network_suggestion = constants.NetworkSuggestion(
+    # Create network suggestion
+    network_suggestion = wifi_utils.create_network_suggestion(
         ssid=wifi_info.ssid,
+        password=wifi_info.password,
+        scan_result=scan_result,
         bssid=wifi_info.bssid,
-        psk=wifi_info.password,
-        is_hidden_ssid=False,
         is_metered=False,
+        is_hidden_ssid=False
     )
+
+    is_bssid_set = True
+
     network_suggestion_array = [network_suggestion.to_dict()]
     network_request = constants.NetworkRequest(
         transport_type=constants.TransportType.TRANSPORT_WIFI,
@@ -227,6 +278,7 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
         network_suggestion_array,
         network_request,
         hsv_output_path_when_failed=self.current_test_info.output_path,
+        allow_button_text=self._allow_button_of_adding_suggestion_dialog,
     )
     logging.info('wifi network suggestion added.')
 
@@ -239,13 +291,23 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       self.ad.wifi.utilityDropShellPermission()
 
     # Verify the network is connected.
-    wifi_utils.wait_until_network_expected_callback(
-        network_callback, constants.NetworkCallback.ON_AVAILABLE
-    )
+    try:
+      wifi_utils.wait_until_network_expected_callback(
+          network_callback, constants.NetworkCallback.ON_AVAILABLE
+      )
+    except errors.CallbackHandlerTimeoutError as e:
+      raise NetworkSuggestionFailedError(
+          _ERROR_MSG_NETWORK_CONNECT_FAILED.format(
+              wifi_ssid=wifi_info.ssid,
+              wifi_pwd=wifi_info.password,
+          )
+      ) from e
     logging.info('wifi network connected.')
 
     # Verify the connected network is expected Wifi network.
-    wifi_utils.assert_connecting_with_expected_connection(self.ad, wifi_info)
+    wifi_utils.assert_connecting_with_expected_connection(
+        self.ad, wifi_info, check_bssid=is_bssid_set
+    )
     logging.info('connected network is expected %s', wifi_info.ssid)
 
     # Remove the network suggestion and verify the process finished.
@@ -276,22 +338,25 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       2. Verify the Android device should disconnect to the Wi-Fi AP after
       removing the network suggestion.
     """
-
-    wifi_info = wifi_utils.start_wpa2_wifi(self.openwrt)
+    wifi_info = self.ap_helper.get_or_start_wifi()
 
     # DUT scans for the WiFi and verify the WiFi is discovered.
-    wifi_utils.wait_for_expected_wifi_discovered(
+    scan_result = wifi_utils.wait_for_expected_wifi_discovered(
         self.ad, wifi_info.ssid, wifi_info.bssid
     )
 
-    # Set up the network suggestion parameters.
-    network_suggestion = constants.NetworkSuggestion(
+    # Create network suggestion
+    network_suggestion = wifi_utils.create_network_suggestion(
         ssid=wifi_info.ssid,
-        psk=wifi_info.password,
-        is_hidden_ssid=False,
+        password=wifi_info.password,
+        scan_result=scan_result,
         is_metered=False,
+        is_hidden_ssid=False,
         is_app_interaction_required=True,
     )
+
+    is_bssid_set = False
+
     network_suggestion_array = [network_suggestion.to_dict()]
     network_request = constants.NetworkRequest(
         transport_type=constants.TransportType.TRANSPORT_WIFI,
@@ -310,6 +375,7 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
         network_suggestion_array,
         network_request,
         hsv_output_path_when_failed=self.current_test_info.output_path,
+        allow_button_text=self._allow_button_of_adding_suggestion_dialog,
     )
     logging.info('wifi network suggestion added.')
 
@@ -322,9 +388,17 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       self.ad.wifi.utilityDropShellPermission()
 
     # Verify the network is connected.
-    wifi_utils.wait_until_network_expected_callback(
-        network_callback, constants.NetworkCallback.ON_AVAILABLE
-    )
+    try:
+      wifi_utils.wait_until_network_expected_callback(
+          network_callback, constants.NetworkCallback.ON_AVAILABLE
+      )
+    except errors.CallbackHandlerTimeoutError as e:
+      raise NetworkSuggestionFailedError(
+          _ERROR_MSG_NETWORK_CONNECT_FAILED.format(
+              wifi_ssid=wifi_info.ssid,
+              wifi_pwd=wifi_info.password,
+          )
+      ) from e
     logging.info('wifi network connected.')
 
     # Verify the post connect broadcast is received.
@@ -335,7 +409,9 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
     logging.info('post connect broadcast is received.')
 
     # Verify the connected network with expected Wifi network.
-    wifi_utils.assert_connecting_with_expected_connection(self.ad, wifi_info)
+    wifi_utils.assert_connecting_with_expected_connection(
+        self.ad, wifi_info, check_bssid=is_bssid_set
+    )
     logging.info('connected network is expected %s', wifi_info.ssid)
 
     # Remove the network suggestion and verify the process finished.
@@ -360,20 +436,27 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       1. Verify the Android device failed to connect to the Wi-Fi AP due to
       failed authentication.
     """
+    wifi_info = self.ap_helper.get_or_start_wifi()
     invalid_psk = 'invalid_psk'
-    wifi_info = wifi_utils.start_wpa2_wifi(self.openwrt)
+    if wifi_info.password == invalid_psk:
+      invalid_psk = 'invalid_psk2'
 
     # DUT scans for the WiFi and verify the WiFi is discovered.
-    wifi_utils.wait_for_expected_wifi_discovered(
+    scan_result = wifi_utils.wait_for_expected_wifi_discovered(
         self.ad, wifi_info.ssid, wifi_info.bssid
     )
 
-    network_suggestion = constants.NetworkSuggestion(
+    # Create network suggestion
+    network_suggestion = wifi_utils.create_network_suggestion(
         ssid=wifi_info.ssid,
-        psk=invalid_psk,
-        is_hidden_ssid=False,
+        password=invalid_psk,
+        scan_result=scan_result,
         is_metered=False,
+        is_hidden_ssid=False,
     )
+
+    is_bssid_set = False
+
     network_suggestion_array = [network_suggestion.to_dict()]
 
     network_request = constants.NetworkRequest(
@@ -392,6 +475,7 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
         network_suggestion_array,
         network_request,
         hsv_output_path_when_failed=self.current_test_info.output_path,
+        allow_button_text=self._allow_button_of_adding_suggestion_dialog,
     )
     logging.info('wifi network suggestion added.')
 
@@ -426,12 +510,13 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
     )
     logging.info('network connection status is failed authentication.')
 
-    # Verify the network is lost.
-    wifi_utils.assert_no_network_callback_received_within_timeout(
+    # Remove the network suggestion, but do not check onLost callback.
+    wifi_utils.remove_network_suggestion_and_assert_disconnection(
+        self.ad,
+        network_suggestion_array,
         network_callback,
-        constants.NetworkCallback.ON_AVAILABLE,
+        check_on_lost_callback=False,
     )
-    logging.info('wifi network suggestion and connection removed.')
 
   def test_that_suggestion_modification_in_place(self) -> None:
     """Tests WiFi connection suggestion modification in place.
@@ -459,20 +544,23 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
       4. Verify the Android device should disconnect to the Wi-Fi AP after
       removing the network suggestion.
     """
-    wifi_info = wifi_utils.start_wpa2_wifi(self.openwrt)
+    wifi_info = self.ap_helper.get_or_start_wifi()
 
     # DUT scans for the WiFi and verify the WiFi is discovered.
-    wifi_utils.wait_for_expected_wifi_discovered(
+    scan_result = wifi_utils.wait_for_expected_wifi_discovered(
         self.ad, wifi_info.ssid, wifi_info.bssid
     )
 
-    # Set up the network suggestion parameters.
-    network_suggestion = constants.NetworkSuggestion(
+    network_suggestion = wifi_utils.create_network_suggestion(
         ssid=wifi_info.ssid,
-        psk=wifi_info.password,
+        password=wifi_info.password,
+        scan_result=scan_result,
         is_hidden_ssid=False,
         is_metered=False,
     )
+
+    is_bssid_set = False
+
     network_suggestion_array = [network_suggestion.to_dict()]
     network_request = constants.NetworkRequest(
         transport_type=constants.TransportType.TRANSPORT_WIFI,
@@ -485,6 +573,7 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
         network_suggestion_array,
         network_request,
         hsv_output_path_when_failed=self.current_test_info.output_path,
+        allow_button_text=self._allow_button_of_adding_suggestion_dialog,
     )
     logging.info('wifi network suggestion added.')
 
@@ -498,13 +587,23 @@ class NetworkSuggestionTests(base_test.BaseTestClass):
 
     network_callback_id = network_callback.callback_id
     # Verify the network is connected.
-    wifi_utils.wait_until_network_expected_callback(
-        network_callback, constants.NetworkCallback.ON_AVAILABLE
-    )
+    try:
+      wifi_utils.wait_until_network_expected_callback(
+          network_callback, constants.NetworkCallback.ON_AVAILABLE
+      )
+    except errors.CallbackHandlerTimeoutError as e:
+      raise NetworkSuggestionFailedError(
+          _ERROR_MSG_NETWORK_CONNECT_FAILED.format(
+              wifi_ssid=wifi_info.ssid,
+              wifi_pwd=wifi_info.password,
+          )
+      ) from e
     logging.info('wifi network connected.')
 
     # Verify the connected network is expected Wifi network.
-    wifi_utils.assert_connecting_with_expected_connection(self.ad, wifi_info)
+    wifi_utils.assert_connecting_with_expected_connection(
+        self.ad, wifi_info, check_bssid=is_bssid_set
+    )
     logging.info('connected network is expected %s', wifi_info.ssid)
 
     # Verify the specific network capability exists.

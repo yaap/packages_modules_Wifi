@@ -118,6 +118,7 @@ import com.android.server.wifi.hotspot2.PasspointManager;
 import com.android.server.wifi.hotspot2.PasspointMatch;
 import com.android.server.wifi.hotspot2.PasspointProvider;
 import com.android.server.wifi.hotspot2.Utils;
+import com.android.server.wifi.nl80211.GenericNetlinkMsg;
 import com.android.server.wifi.p2p.WifiP2pMetrics;
 import com.android.server.wifi.proto.WifiStatsLog;
 import com.android.server.wifi.proto.nano.WifiMetricsProto;
@@ -741,6 +742,7 @@ public class WifiMetrics {
         private long mLastRoamCompleteMillis;
         public WifiValidationInfo mValidationInfo;
         public int mDisconnectReason;
+        public int mFirmwareAlertReason;
 
         SessionData(ConnectionEvent connectionEvent, String ssid, long sessionStartTimeMillis,
                 int band, int authType) {
@@ -784,6 +786,7 @@ public class WifiMetrics {
 
         private int mValidationCount = 0;
         private boolean mHasReportedValidationResult = false;
+        private int mRssi;
     }
 
     /**
@@ -794,7 +797,8 @@ public class WifiMetrics {
             int status,
             long l3ConnectedStateTimestamp,
             long lastValidationTimestamp,
-            boolean captivePortalDetected) {
+            boolean captivePortalDetected,
+            int rssi) {
         SessionData currentSession = mCurrentConnectionSessionPerIface.get(ifaceName);
         if (currentSession != null) {
             currentSession.mValidationInfo.mStatus = status;
@@ -802,6 +806,7 @@ public class WifiMetrics {
             currentSession.mValidationInfo.mLastValidationTimestamp = lastValidationTimestamp;
             currentSession.mValidationInfo.mValidationCount += 1;
             currentSession.mValidationInfo.mCaptivePortalDetected = captivePortalDetected;
+            currentSession.mValidationInfo.mRssi = rssi;
         }
     }
 
@@ -829,7 +834,8 @@ public class WifiMetrics {
                     status,
                     wifiNetworkValidationDurationMillis,
                     currentSession.mValidationInfo.mValidationCount,
-                    currentSession.mValidationInfo.mCaptivePortalDetected);
+                    currentSession.mValidationInfo.mCaptivePortalDetected,
+                    currentSession.mValidationInfo.mRssi);
         }
     }
 
@@ -859,6 +865,7 @@ public class WifiMetrics {
         private boolean mIsPasnSupported = false;
         private boolean mIsSecureHeLtfSupported = false;
         private boolean mIsRangingFrameProtectionRequired = false;
+        private boolean mIsBssColorEnabled = false;
 
         public String toString() {
             StringBuilder sb = new StringBuilder();
@@ -898,6 +905,7 @@ public class WifiMetrics {
                 sb.append("" + mIsPasnSupported);
                 sb.append("" + mIsSecureHeLtfSupported);
                 sb.append("" + mIsRangingFrameProtectionRequired);
+                sb.append("" + mIsBssColorEnabled);
             }
             return sb.toString();
         }
@@ -2380,6 +2388,27 @@ public class WifiMetrics {
     }
 
     /**
+     * Extracts the OUI (first 3 octets) from a BSSID string.
+     * It checks the Locally Administered Bit (U/L bit) of the first octet.
+     * @param bssid The MAC address of the Access Point in "XX:XX:XX:XX:XX:XX" format.
+     * @return The OUI string, or "RANDOM_MAC" if the BSSID is a locally administered address.
+     */
+    private String getOuiFromBssid(String bssid) {
+        if (bssid == null || bssid.length() != 17) {
+            return null;
+        }
+
+        String firstOctetHex = bssid.substring(0, 2);
+        int firstOctet = Integer.parseInt(firstOctetHex, 16);
+        // Check the Locally Administered Bit (U/L Bit).
+        if ((firstOctet & 0x02) != 0) {
+            return "RANDOM_MAC";
+        }
+
+        return bssid.substring(0, 8);
+    }
+
+    /**
      * End a Connection event record. Call when wifi connection attempt succeeds or fails.
      * If a Connection event has not been started and is active when .end is called, then this
      * method will do nothing.
@@ -2439,7 +2468,8 @@ public class WifiMetrics {
                 int lastDisconnectReason = (previousSession != null
                         ? previousSession.mDisconnectReason :
                         WifiStatsLog.WIFI_DISCONNECT_REPORTED__FAILURE_CODE__UNKNOWN);
-
+                int lastFirmwareAlertReason = (previousSession != null
+                        ? previousSession.mFirmwareAlertReason : 0);
                 WifiStatsLog.write(WifiStatsLog.WIFI_CONNECTION_RESULT_REPORTED,
                         connectionSucceeded,
                         wwFailureCode, currentConnectionEvent.mConnectionEvent.signalStrength,
@@ -2460,7 +2490,9 @@ public class WifiMetrics {
                         frequency,
                         currentConnectionEvent.mL2ConnectingDuration,
                         currentConnectionEvent.mL3ConnectingDuration,
-                        lastDisconnectReason);
+                        lastDisconnectReason,
+                        getOuiFromBssid(currentConnectionEvent.mConfigBssid),
+                        lastFirmwareAlertReason);
 
                 if (connectionSucceeded) {
                     reportRouterCapabilities(currentConnectionEvent.mRouterFingerPrint);
@@ -2899,7 +2931,8 @@ public class WifiMetrics {
                         : WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_SECURE_HE_LTF_SUPPORTED__TRI_STATE_FALSE,
                 r.mIsRangingFrameProtectionRequired
                         ? WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_RANGING_FRAME_PROTECTION_REQUIRED__TRI_STATE_TRUE
-                        : WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_RANGING_FRAME_PROTECTION_REQUIRED__TRI_STATE_FALSE);
+                        : WifiStatsLog.WIFI_AP_CAPABILITIES_REPORTED__IS_RANGING_FRAME_PROTECTION_REQUIRED__TRI_STATE_FALSE,
+                r.mIsBssColorEnabled);
     }
 
     /**
@@ -2943,6 +2976,7 @@ public class WifiMetrics {
                     }
                 }
                 currentSession.mDisconnectReason = disconnectReason;
+                currentSession.mFirmwareAlertReason = firmwareAlertReason;
 
                 WifiStatsLog.write(WifiStatsLog.WIFI_DISCONNECT_REPORTED,
                         durationSeconds,
@@ -3122,6 +3156,8 @@ public class WifiMetrics {
         currentConnectionEvent.mRouterFingerPrint.mHsRelease = networkDetail.getHSRelease();
         currentConnectionEvent.mRouterFingerPrint.mIsSecureHeLtfSupported = networkDetail.isSecureHeLtfSupported();
         currentConnectionEvent.mRouterFingerPrint.mIsRangingFrameProtectionRequired = networkDetail.isRangingFrameProtectionRequired();
+        currentConnectionEvent.mRouterFingerPrint.mIsBssColorEnabled =
+                networkDetail.isBssColorEnabled();
     }
 
     /**
@@ -6401,6 +6437,7 @@ public class WifiMetrics {
             } else {
                 mLastScreenOffTimeMillis = mClock.getElapsedSinceBootMillis();
             }
+            mWifiAwareMetrics.handleScreenStateChanged(screenOn);
         }
     }
 
@@ -10984,5 +11021,22 @@ public class WifiMetrics {
 
     public void setLastThreadDeviceRole(int deviceRole) {
         mLastThreadDeviceRole = deviceRole;
+    }
+
+    /**
+     * Log when NL80211 is called for tracking success or failure
+     *
+     * @param message NL80211 command message.
+     * @param reason success or failure reason of the NL80211 calls.
+     */
+    public void reportNl80211CommandResult(GenericNetlinkMsg message, int reason) {
+        if (message == null) {
+            WifiStatsLog.write(WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED,
+                    WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__COMMAND_ID__NL80211_CMD_UNSPECIFIED,
+                    reason);
+        } else {
+            WifiStatsLog.write(WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED,
+                    message.genNlHeader.command, reason);
+        }
     }
 }

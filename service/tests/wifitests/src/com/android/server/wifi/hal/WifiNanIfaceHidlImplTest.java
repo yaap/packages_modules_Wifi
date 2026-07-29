@@ -129,18 +129,19 @@ public class WifiNanIfaceHidlImplTest extends WifiBaseTest {
                 "XXX").setRangingEnabled(true).build();
         SubscribeConfig subDefault = new SubscribeConfig.Builder().setServiceName("XXX").build();
         SubscribeConfig subWithMin = new SubscribeConfig.Builder().setServiceName(
-                "XXX").setMinDistanceMm(minDistanceMm).build();
+                "XXX").setEgressDistanceMm(minDistanceMm).build();
         SubscribeConfig subWithMax = new SubscribeConfig.Builder().setServiceName(
-                "XXX").setMaxDistanceMm(maxDistanceMm).build();
+                "XXX").setIngressDistanceMm(maxDistanceMm).build();
         SubscribeConfig subWithMinMax = new SubscribeConfig.Builder().setServiceName(
-                "XXX").setMinDistanceMm(minDistanceMm).setMaxDistanceMm(maxDistanceMm).build();
+                "XXX").setEgressDistanceMm(minDistanceMm).setIngressDistanceMm(
+                maxDistanceMm).build();
 
-        mDut.publish(tid, pid, pubDefault, null);
-        mDut.publish(tid, pid, pubWithRanging, null);
-        mDut.subscribe(tid, pid, subDefault, null);
-        mDut.subscribe(tid, pid, subWithMin, null);
-        mDut.subscribe(tid, pid, subWithMax, null);
-        mDut.subscribe(tid, pid, subWithMinMax, null);
+        mDut.publish(tid, pid, pubDefault, null, null);
+        mDut.publish(tid, pid, pubWithRanging, null, null);
+        mDut.subscribe(tid, pid, subDefault, null, null);
+        mDut.subscribe(tid, pid, subWithMin, null, null);
+        mDut.subscribe(tid, pid, subWithMax, null, null);
+        mDut.subscribe(tid, pid, subWithMinMax, null, null);
 
         verify(mIWifiNanIface, times(2)).startPublishRequest(eq(tid), pubCaptor.capture());
         verify(mIWifiNanIface, times(4)).startSubscribeRequest(eq(tid), subCaptor.capture());
@@ -245,7 +246,7 @@ public class WifiNanIfaceHidlImplTest extends WifiBaseTest {
         byte interactive5 = 2;
 
         Pair<NanConfigRequest, NanConfigRequestSupplemental> configs =
-                validateEnableAndConfigure((short) 10, new ConfigRequest.Builder().build(), false,
+                validateEnableAndConfigure((short) 10, new ConfigRequest.Builder().build(), true,
                         false, false, false, interactive24, interactive5, false);
 
         collector.checkThat("validDiscoveryWindowIntervalVal-5", true,
@@ -272,7 +273,7 @@ public class WifiNanIfaceHidlImplTest extends WifiBaseTest {
         byte idle5 = 2;
 
         Pair<NanConfigRequest, NanConfigRequestSupplemental> configs =
-                validateEnableAndConfigure((short) 10, new ConfigRequest.Builder().build(), false,
+                validateEnableAndConfigure((short) 10, new ConfigRequest.Builder().build(), true,
                         true, false, true, idle24, idle5, false);
 
         collector.checkThat("validDiscoveryWindowIntervalVal-5", true,
@@ -334,7 +335,7 @@ public class WifiNanIfaceHidlImplTest extends WifiBaseTest {
         byte interactive5 = 2;
 
         Pair<NanConfigRequest, NanConfigRequestSupplemental> configs =
-                validateEnableAndConfigure((short) 10, new ConfigRequest.Builder().build(), false,
+                validateEnableAndConfigure((short) 10, new ConfigRequest.Builder().build(), true,
                         false, false, false, interactive24, interactive5, true);
 
         collector.checkThat("validDiscoveryWindowIntervalVal-5", true,
@@ -371,7 +372,7 @@ public class WifiNanIfaceHidlImplTest extends WifiBaseTest {
         byte idle5 = 2;
 
         Pair<NanConfigRequest, NanConfigRequestSupplemental> configs =
-                validateEnableAndConfigure((short) 10, new ConfigRequest.Builder().build(), false,
+                validateEnableAndConfigure((short) 10, new ConfigRequest.Builder().build(), true,
                         true, false, true, idle24, idle5, true);
 
         collector.checkThat("validDiscoveryWindowIntervalVal-5", true,
@@ -527,7 +528,7 @@ public class WifiNanIfaceHidlImplTest extends WifiBaseTest {
             throws RemoteException {
         mIsInterface12 = isHal12;
 
-        mDut.enableAndConfigure(transactionId, configRequest, notifyIdentityChange,
+        mDut.enableAndConfigure(transactionId, configRequest,
                 initialConfiguration, false, false, 2437, -1 /* clusterId */,
                 1800 /* PARAM_MAC_RANDOM_INTERVAL_SEC_DEFAULT */,
                 getPowerParams(isInteractive, isIdle, discoveryWindow24Ghz, discoveryWindow5Ghz));
@@ -696,7 +697,7 @@ public class WifiNanIfaceHidlImplTest extends WifiBaseTest {
         }
 
         mDut.respondToDataPathRequest(tid, accept, ndpId, interfaceName,
-                appInfo, isOutOfBand, CAP, securityConfig, (byte) 0, false);
+                appInfo, isOutOfBand, CAP, securityConfig, (byte) 0, false, null, null);
 
         verify(mIWifiNanIface).respondToDataPathIndicationRequest(eq(tid), captor.capture());
 

@@ -263,8 +263,8 @@ public class WifiRttControllerAidlImplTest extends WifiBaseTest {
         collector.checkThat("entry 0: rtt burst size", rttConfig.numFramesPerBurst,
                 equalTo(RangingRequest.getMaxRttBurstSize()));
         // ntbMinMeasurementTime in units of 100 us
-        // DEFAULT_NTB_MIN_TIME_BETWEEN_MEASUREMENTS_MICROS = 250000 --> 2500 * 100 us
-        collector.checkThat("", rttConfig.ntbMinMeasurementTime, equalTo(2500L));
+        // DEFAULT_NTB_MIN_TIME_BETWEEN_MEASUREMENTS_MICROS = 40000 --> 400 * 100 us
+        collector.checkThat("", rttConfig.ntbMinMeasurementTime, equalTo(400L));
         // ntbMaxMeasurementTime in units of 10 ms
         // DEFAULT_NTB_MAX_TIME_BETWEEN_MEASUREMENTS_MICROS = 15000000 --> 1500 * 10 ms
         collector.checkThat("", rttConfig.ntbMaxMeasurementTime, equalTo(1500L));
@@ -663,6 +663,40 @@ public class WifiRttControllerAidlImplTest extends WifiBaseTest {
         for (int i = 0; i < rttR.size(); ++i) {
             collector.checkThat("entry", rttR.get(i), IsNull.notNullValue());
         }
+    }
+
+    /**
+     * Validate correct result conversion from HAL to framework for BUSY_TRY_LATER status.
+     */
+    @Test
+    public void testRangeResultsBusyTryLater() throws Exception {
+        int cmdId = 55;
+        RttResult[] results = new RttResult[1];
+        RttResult res = createRttResult();
+        res.addr = MacAddress.byteAddrFromStringAddr("05:06:07:08:09:0A");
+        res.status = RttStatus.FAIL_BUSY_TRY_LATER;
+        res.retryAfterDuration = 5; // 640 ms (5 * 128)
+        results[0] = res;
+
+        // (1) have the HAL call us with results
+        mEventCallbackCaptor.getValue().onResults(cmdId, results);
+
+        // (2) verify call to framework
+        verify(mRangingResultsCallbackMock).onRangingResults(eq(cmdId), mRttResultCaptor.capture());
+
+        // verify contents of the framework results
+        List<RangingResult> rttR = mRttResultCaptor.getValue();
+
+        collector.checkThat("number of entries", rttR.size(), equalTo(1));
+
+        RangingResult rttResult = rttR.get(0);
+        collector.checkThat("status", rttResult.getStatus(),
+                equalTo(RangingResult.STATUS_BUSY_TRY_LATER));
+        collector.checkThat("mac", rttResult.getMacAddress().toByteArray(),
+                equalTo(MacAddress.fromString("05:06:07:08:09:0A").toByteArray()));
+        collector.checkThat("retryAfterDuration", rttResult.getRetryAfterDurationMillis(),
+                equalTo(5 * 128));
+        verifyNoMoreInteractions(mIWifiRttControllerMock);
     }
 
     /**

@@ -32,4 +32,8 @@ oneway interface IScoreUpdateObserver
     void requestNudOperation(int sessionId);
 
     void blocklistCurrentBssid(int sessionId);
+
+    void unblockAllBssids();
+
+    void setPreEvaluationEnabled(boolean enabled);
 }

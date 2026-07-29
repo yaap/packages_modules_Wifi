@@ -15,7 +15,6 @@
  */
 package com.android.server.wifi;
 
-import static com.android.server.wifi.util.InformationElementUtil.BssLoad.INVALID;
 import static com.android.server.wifi.util.InformationElementUtil.BssLoad.MAX_CHANNEL_UTILIZATION;
 import static com.android.server.wifi.util.InformationElementUtil.BssLoad.MIN_CHANNEL_UTILIZATION;
 
@@ -25,9 +24,9 @@ import android.content.Context;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiAnnotations.WifiStandard;
 import android.net.wifi.WifiInfo;
-import android.net.wifi.nl80211.DeviceWiphyCapabilities;
 import android.util.Log;
 
+import com.android.server.wifi.nl80211.DeviceWiphyCapabilities;
 import com.android.wifi.resources.R;
 
 /**
@@ -133,6 +132,22 @@ public class ThroughputPredictor {
     }
 
     /**
+     * Predict maximum Tx throughput supported by connected MLO link at the highest RSSI
+     * with the lowest channel utilization
+     * @return predicted maximum Tx throughput in Mbps
+     */
+    public int predicMaxTxThroughputForMloLink(
+            @NonNull WifiNative.ConnectionCapabilities capabilities,
+            @NonNull WifiNative.ConnectionMloLink linkInfo) {
+        if (linkInfo.getChannelBandwidth() == -1) {
+            return WifiInfo.LINK_SPEED_UNKNOWN;
+        }
+        return predictThroughputInternal(capabilities.wifiStandard, capabilities.is11bMode,
+                linkInfo.getChannelBandwidth(), WifiInfo.MAX_RSSI,
+                linkInfo.getMaxNumberTxSpatialStreams(), MIN_CHANNEL_UTILIZATION, 0, null);
+    }
+
+    /**
      * Predict maximum Rx throughput supported by connected network at the highest RSSI
      * with the lowest channel utilization
      * @return predicted maximum Rx throughput in Mbps
@@ -141,6 +156,22 @@ public class ThroughputPredictor {
         return predictThroughputInternal(capabilities.wifiStandard, capabilities.is11bMode,
                 capabilities.channelBandwidth, WifiInfo.MAX_RSSI,
                 capabilities.maxNumberRxSpatialStreams, MIN_CHANNEL_UTILIZATION, 0, null);
+    }
+
+    /**
+     * Predict maximum Rx throughput supported by connected MLO link at the highest RSSI
+     * with the lowest channel utilization
+     * @return predicted maximum Rx throughput in Mbps
+     */
+    public int predicMaxRxThroughputForMloLink(
+            @NonNull WifiNative.ConnectionCapabilities capabilities,
+            @NonNull WifiNative.ConnectionMloLink linkInfo) {
+        if (linkInfo.getChannelBandwidth() == -1) {
+            return WifiInfo.LINK_SPEED_UNKNOWN;
+        }
+        return predictThroughputInternal(capabilities.wifiStandard, capabilities.is11bMode,
+                linkInfo.getChannelBandwidth(), WifiInfo.MAX_RSSI,
+                linkInfo.getMaxNumberRxSpatialStreams(), MIN_CHANNEL_UTILIZATION, 0, null);
     }
 
     /**

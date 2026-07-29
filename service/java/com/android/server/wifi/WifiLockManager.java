@@ -16,6 +16,8 @@
 
 package com.android.server.wifi;
 
+import static android.net.wifi.WifiManager.MAX_LOCK_TAG_LENGTH;
+
 import android.annotation.NonNull;
 import android.app.ActivityManager;
 import android.content.Context;
@@ -37,7 +39,6 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.proto.WifiStatsLog;
 import com.android.server.wifi.util.WifiPermissionsUtil;
 import com.android.server.wifi.util.WorkSourceUtil;
-import com.android.wifi.flags.Flags;
 import com.android.wifi.resources.R;
 
 import java.io.PrintWriter;
@@ -586,9 +587,6 @@ public class WifiLockManager {
     }
 
     private boolean doesD2dSatisfyConnectionRequirementForApp(int uid) {
-        if (!Flags.wifiLockActivatedByP2pOrAware()) {
-            return false;
-        }
         if (mWifiPermissionsUtil.checkRequestCompanionProfileNearbyDeviceStreamingPermission(uid)) {
             return true;
         }
@@ -596,7 +594,6 @@ public class WifiLockManager {
     }
 
     private boolean doesD2dSatisfyConnectionRequirementForAnyApp() {
-        if (!Flags.wifiLockActivatedByP2pOrAware()) return false;
         for (int i = 0; i < mLowLatencyUidWatchList.size(); i++) {
             UidRec uidRec = mLowLatencyUidWatchList.valueAt(i);
             if (uidRec.mD2dSatisfiesConnectionRequirement) {
@@ -1229,6 +1226,14 @@ public class WifiLockManager {
         mVerboseLoggingEnabled = verboseEnabled;
     }
 
+    private static String trimLockTagIfNeeded(String lockTag) {
+        if (lockTag == null || lockTag.length() <= MAX_LOCK_TAG_LENGTH) {
+            return lockTag;
+        }
+        Log.w(TAG, "Trimming lock tag from original size " + lockTag.length());
+        return lockTag.substring(0, MAX_LOCK_TAG_LENGTH);
+    }
+
     private class WifiLock implements IBinder.DeathRecipient {
         String mTag;
         int mUid;
@@ -1238,7 +1243,7 @@ public class WifiLockManager {
         long mAcqTimestamp;
 
         WifiLock(int lockMode, String tag, IBinder binder, WorkSource ws) {
-            mTag = tag;
+            mTag = trimLockTagIfNeeded(tag);
             mBinder = binder;
             mUid = Binder.getCallingUid();
             mMode = lockMode;

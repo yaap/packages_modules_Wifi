@@ -158,12 +158,12 @@ import java.util.function.Consumer;
  * {@link android.Manifest.permission#CHANGE_WIFI_STATE} to perform any further peer-to-peer
  * operations.
  *
- * {@see WifiP2pConfig}
- * {@see WifiP2pInfo}
- * {@see WifiP2pGroup}
- * {@see WifiP2pDevice}
- * {@see WifiP2pDeviceList}
- * {@see android.net.wifi.WpsInfo}
+ * @see WifiP2pConfig
+ * @see WifiP2pInfo
+ * @see WifiP2pGroup
+ * @see WifiP2pDevice
+ * @see WifiP2pDeviceList
+ * @see android.net.wifi.WpsInfo
  */
 @RestrictedForEnvironment(
         environments = ENVIRONMENT_SDK_RUNTIME, from = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -2238,7 +2238,11 @@ public class WifiP2pManager {
      */
     private Bundle prepareExtrasBundleWithAttributionSource(Context context) {
         Bundle bundle = new Bundle();
-        if (SdkLevel.isAtLeastS()) {
+        if (SdkLevel.isAtLeastU()) {
+            // Need to set DEVICE_ID_DEFAULT to prevent AttributionSource from being stale later
+            bundle.putParcelable(WifiManager.EXTRA_PARAM_KEY_ATTRIBUTION_SOURCE,
+                    context.createDeviceContext(Context.DEVICE_ID_DEFAULT).getAttributionSource());
+        } else if (SdkLevel.isAtLeastS()) {
             bundle.putParcelable(WifiManager.EXTRA_PARAM_KEY_ATTRIBUTION_SOURCE,
                     context.getAttributionSource());
         }
@@ -2246,7 +2250,13 @@ public class WifiP2pManager {
     }
 
     private Object maybeGetAttributionSource(Context context) {
-        return SdkLevel.isAtLeastS() ? context.getAttributionSource() : null;
+        if (SdkLevel.isAtLeastU()) {
+            // Need to set DEVICE_ID_DEFAULT to prevent AttributionSource from being stale later
+            return context.createDeviceContext(Context.DEVICE_ID_DEFAULT).getAttributionSource();
+        } else if (SdkLevel.isAtLeastS()) {
+            return context.getAttributionSource();
+        }
+        return null;
     }
 
     private Channel initializeChannel(Context srcContext, Looper srcLooper,
@@ -3310,9 +3320,9 @@ public class WifiP2pManager {
     /**
      * Request a list of all the persistent p2p groups stored in system.
      *
-     * <p>The caller must have one of {@link android.Manifest.permission.NETWORK_SETTINGS},
-     * {@link android.Manifest.permission.NETWORK_STACK}, and
-     * {@link android.Manifest.permission.READ_WIFI_CREDENTIAL}.
+     * <p>The caller must have one of {@link android.Manifest.permission#NETWORK_SETTINGS},
+     * {@link android.Manifest.permission#NETWORK_STACK}, and
+     * {@link android.Manifest.permission#READ_WIFI_CREDENTIAL}.
      *
      * <p>If targeting {@link android.os.Build.VERSION_CODES#TIRAMISU} or later,
      * the application must have {@link android.Manifest.permission#NEARBY_WIFI_DEVICES} with

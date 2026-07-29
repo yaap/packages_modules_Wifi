@@ -212,10 +212,17 @@
     <string name="apm_enabled_first_time_title" msgid="2534167413190488009">"वाय-फाय सुरू राहते"</string>
     <string name="apm_enabled_first_time_message" msgid="6093911536874954410">"तुमचे डिव्हाइस विमान मोडमध्ये वाय-फाय सुरू ठेवण्याचे लक्षात ठेवते. तुम्हाला वाय-फाय सुरू ठेवायचा नसल्यास तो बंद करा."</string>
     <string name="wifi_network_disabled_by_admin_title" msgid="9057697656855227293">"उपलब्ध नसलेले नेटवर्क"</string>
-    <string name="wifi_network_disabled_by_admin_message" msgid="7830360441333155462">"तुमच्या अ‍ॅडमिनिस्ट्रेटर ने <xliff:g id="SSID">%1$s</xliff:g> बंद केले आहे."</string>
+    <string name="wifi_network_disabled_by_admin_message" msgid="7830360441333155462">"तुमच्या अ‍ॅडमिनिस्ट्रेटरने <xliff:g id="SSID">%1$s</xliff:g> बंद केले आहे."</string>
     <string name="wifi_network_disabled_by_admin_button" msgid="3350310756265122689">"बंद करा"</string>
     <string name="wifi_network_switch_dialog_title_no_internet" msgid="4116969009784041242">"<xliff:g id="SSID_0">%1$s</xliff:g> इंटरनेटशी कनेक्ट केलेले दिसत नाही. <xliff:g id="SSID_1">%2$s</xliff:g> वर स्विच करायचे आहे का?"</string>
     <string name="wifi_network_switch_dialog_title_bad_internet" msgid="6013385270249705547">"<xliff:g id="SSID_0">%1$s</xliff:g> ही गुणवत्ता कमी आहे. <xliff:g id="SSID_1">%2$s</xliff:g> वर स्विच करायचे आहे का?"</string>
     <string name="wifi_network_switch_dialog_positive_button" msgid="7845507995422722454">"स्विच करा"</string>
     <string name="wifi_network_switch_dialog_negative_button" msgid="1496665895689498806">"स्विच करू नका"</string>
+    <string name="wifi_disconnect_dialog_title" msgid="7541989406466882747">"<xliff:g id="APP_NAME">%1$s</xliff:g> वरून डिस्कनेक्ट करायचे आहे का?"</string>
+    <string name="wifi_disconnect_dialog_message" msgid="5116841532118842227">"या नेटवर्कवरून डिस्कनेक्ट केल्याने <xliff:g id="APP_NAME">%1$s</xliff:g> डिस्कनेक्ट होईल."</string>
+    <string name="wifi_disconnect_dialog_positive_button" msgid="1193888906224230855">"डिस्कनेक्ट करा"</string>
+    <string name="wifi_disconnect_dialog_negative_button" msgid="5075682597077355859">"रद्द करा"</string>
+    <string name="wifi_disconnect_dialog_new_connection_title" msgid="6276398076311281426">"वेगळ्या वाय-फाय नेटवर्कसोबत कनेक्ट करायचे आहे का?"</string>
+    <string name="wifi_disconnect_dialog_new_connection_message" msgid="2830348590173029295">"<xliff:g id="SSID">%2$s</xliff:g> सोबत कनेक्ट केल्याने <xliff:g id="APP_NAME">%1$s</xliff:g> डिस्कनेक्ट होईल."</string>
+    <string name="wifi_disconnect_dialog_new_connection_positive_button" msgid="4891994857934666730">"कनेक्ट करा"</string>
 </resources>

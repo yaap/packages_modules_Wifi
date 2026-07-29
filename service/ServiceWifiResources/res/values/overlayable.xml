@@ -73,6 +73,8 @@
           <item type="integer" name="config_wifiFrameworkSoftApShutDownTimeoutMilliseconds" />
           <item type="integer" name="config_wifiFrameworkSoftApShutDownIdleInstanceInBridgedModeTimeoutMillisecond" />
           <item type="bool" name="config_wifiFrameworkSoftApDisableBridgedModeShutdownIdleInstanceWhenCharging" />
+          <item type="integer" name="config_wifiFrameworkSoftApTrafficStatusIdleIntervalMilliseconds" />
+          <item type="integer" name="config_wifiFrameworkSoftApIdleTrafficThresholdPackets" />
           <item type="array" name="config_wifiOobPseudonymEnabled_carrier_overrides" />
           <item type="array" name="config_wifiOobPseudonymEntitlementServerUrl_carrier_overrides" />
           <item type="bool" name="config_wifiSoftApDynamicCountryCodeUpdateSupported" />
@@ -84,6 +86,7 @@
           <item type="bool" name="config_wifiSoftapResetMaxClientSettingConfig" />
           <item type="bool" name="config_wifiSoftapAutoUpgradeToBridgedConfigWhenSupported" />
           <item type="bool" name="config_wifiSoftapUpgradeTetheredTo2g5gBridgedIfBandsAreSubset" />
+          <item type="bool" name="config_wifiSoftapUpgradeTetheredTo2g6gBridgedIfBandIs6g" />
           <item type="string"  name="config_wifiSoftap2gChannelList" />
           <item type="string"  name="config_wifiSoftap5gChannelList" />
           <item type="string"  name="config_wifiSoftap6gChannelList" />
@@ -157,7 +160,7 @@
           <item type="integer" name="config_wifiPnoScanLowRssiNetworkRetryStartDelaySec" />
           <item type="integer" name="config_wifiPnoScanLowRssiNetworkRetryMaxDelaySec" />
           <item type="integer" name="config_wifiConnectedHighRssiScanMinimumWindowSizeSec" />
-
+          <item type="integer" name="config_wifiPreviouslyConnectedNetworkWrongPasswordThreshold" />
           <item type="integer" name="config_wifiDisableReasonAssociationRejectionThreshold" />
           <item type="integer" name="config_wifiDisableReasonAuthenticationFailureThreshold" />
           <item type="integer" name="config_wifiDisableReasonDhcpFailureThreshold" />
@@ -252,6 +255,8 @@
           <item type="bool" name="config_wifiMultiStaLocalOnlyConcurrencyEnabled" />
           <item type="bool" name="config_wifiMultiStaRestrictedConcurrencyEnabled" />
           <item type="bool" name="config_wifiMultiStaMultiInternetConcurrencyEnabled" />
+          <item type="bool" name="config_wifiMultiInternetSameBandConnectionAllowed" />
+          <item type="bool" name="config_wifiMultiInternetSameBssidConnectionAllowed" />
           <item type="bool" name="config_wifiDefaultCoexAlgorithmEnabled"/>
           <item type="bool" name="config_wifiCoexForGpsL1"/>
           <item type="integer" name="config_wifiCoexGpsL1ThresholdKhz"/>
@@ -336,7 +341,6 @@
           <item type="bool" name="config_wifiP2pGoIpAddressAllocationInEapolFrames" />
           <item type="string"  name="config_wifiP2pGoEapolIpAddressRangeStart" />
           <item type="string"  name="config_wifiP2pGoEapolIpAddressRangeEnd" />
-          <item type="bool" name="config_wifiDisableFirmwareRoamingInIdleMode" />
           <item type="bool" name="config_wifiUpdateCountryCodeFromScanResultGeneric" />
           <item type="bool" name ="config_aware_vdbg_enable_on_verbose_logging" />
           <item type="bool" name="config_wifiSofapHalMapWpa3TransitionModeToWpa3OnlyIn6GHzBand" />
@@ -356,9 +360,13 @@
           <item type="bool" name="config_wifi_subsystem_restart_bugreport_enabled" />
           <item type="bool" name="config_wifiVoipDetectionEnabled" />
           <item type="bool" name="config_wifiUsdPublisherSupported" />
-          <item type="bool" name="config_wifiMainlineSupplicantEnabled" />
           <item type="integer" name="config_internalScorerType" />
           <item type="bool" name="config_prioritizeExternalScorer" />
+          <item type="bool" name="config_wifiAwareSdeaHeaderFromFramework" />
+          <item type="bool" name="config_preEvaluationEnabled" />
+          <item type="bool" name="config_wifiMainlineSupplicantEnabled" />
+          <item type="bool" name="config_wificondMigrationEnabled" />
+          <item type="array" name="config_wifiMobilityFilterCarrierIdBlocklist" />
 
           <!-- Params from config.xml that can be overlayed -->
 

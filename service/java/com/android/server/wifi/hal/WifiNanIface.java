@@ -29,7 +29,6 @@ import android.net.wifi.aware.WifiAwareDataPathSecurityConfig;
 import android.net.wifi.rtt.RangingResult;
 import android.util.Log;
 
-import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.wifi.aware.Capabilities;
 import com.android.server.wifi.aware.PairingConfigManager;
 
@@ -44,8 +43,8 @@ public class WifiNanIface implements WifiHal.WifiInterface {
     private static final String TAG = "WifiNanIface";
     private IWifiNanIface mWifiNanIface;
 
-    @VisibleForTesting
-    static final String SERVICE_NAME_FOR_OOB_DATA_PATH = "Wi-Fi Aware Data Path";
+    public static final String SERVICE_NAME_FOR_OOB_DATA_PATH = "Wi-Fi Aware Data Path";
+
 
     /**
      * Event types for a cluster event indication.
@@ -369,12 +368,12 @@ public class WifiNanIface implements WifiHal.WifiInterface {
      *                         boolean, boolean, boolean, int, int, PowerParameters)}
      */
     public boolean enableAndConfigure(short transactionId, ConfigRequest configRequest,
-            boolean notifyIdentityChange, boolean initialConfiguration, boolean rangingEnabled,
+            boolean initialConfiguration, boolean rangingEnabled,
             boolean isInstantCommunicationEnabled, int instantModeChannel, int clusterId,
             int macAddressRandomizationIntervalSec, PowerParameters powerParameters) {
         return validateAndCall("enableAndConfigure", false,
                 () -> mWifiNanIface.enableAndConfigure(transactionId, configRequest,
-                        notifyIdentityChange, initialConfiguration, rangingEnabled,
+                        initialConfiguration, rangingEnabled,
                         isInstantCommunicationEnabled, instantModeChannel, clusterId,
                         macAddressRandomizationIntervalSec, powerParameters));
     }
@@ -391,28 +390,30 @@ public class WifiNanIface implements WifiHal.WifiInterface {
      * See comments for {@link IWifiNanIface#publish(short, byte, PublishConfig, byte[])}
      */
     public boolean publish(short transactionId, byte publishId, PublishConfig publishConfig,
-            byte[] nik) {
+            byte[] nik, byte[] sdeaHeader) {
         return validateAndCall("publish", false,
-                () -> mWifiNanIface.publish(transactionId, publishId, publishConfig, nik));
+                () -> mWifiNanIface.publish(transactionId, publishId, publishConfig, nik,
+                        sdeaHeader));
     }
 
     /**
      * See comments for {@link IWifiNanIface#subscribe(short, byte, SubscribeConfig, byte[])}
      */
     public boolean subscribe(short transactionId, byte subscribeId,
-            SubscribeConfig subscribeConfig, byte[] nik) {
+            SubscribeConfig subscribeConfig, byte[] nik, byte[] sdeaHeader) {
         return validateAndCall("subscribe", false,
-                () -> mWifiNanIface.subscribe(transactionId, subscribeId, subscribeConfig, nik));
+                () -> mWifiNanIface.subscribe(transactionId, subscribeId, subscribeConfig, nik,
+                        sdeaHeader));
     }
 
     /**
      * See comments for {@link IWifiNanIface#sendMessage(short, byte, int, MacAddress, byte[])}
      */
     public boolean sendMessage(short transactionId, byte pubSubId, int requestorInstanceId,
-            MacAddress dest, byte[] message) {
+            MacAddress dest, byte[] message, byte[] sdeaHeader) {
         return validateAndCall("sendMessage", false,
                 () -> mWifiNanIface.sendMessage(transactionId, pubSubId, requestorInstanceId,
-                        dest, message));
+                        dest, message, sdeaHeader));
     }
 
     /**
@@ -470,11 +471,11 @@ public class WifiNanIface implements WifiHal.WifiInterface {
             String interfaceName, byte[] appInfo,
             boolean isOutOfBand, Capabilities capabilities,
             WifiAwareDataPathSecurityConfig securityConfig, byte pubSubId,
-            boolean frameProtectionEnabled) {
+            boolean frameProtectionEnabled, byte[] peerMac, byte[] ndiInitMac) {
         return validateAndCall("respondToDataPathRequest", false,
                 () -> mWifiNanIface.respondToDataPathRequest(transactionId, accept, ndpId,
-                        interfaceName, appInfo, isOutOfBand, capabilities, securityConfig,
-                        pubSubId, frameProtectionEnabled));
+                        interfaceName, appInfo, isOutOfBand, capabilities, securityConfig, pubSubId,
+                        frameProtectionEnabled, peerMac, ndiInitMac));
     }
 
     /**
@@ -520,10 +521,11 @@ public class WifiNanIface implements WifiHal.WifiInterface {
      * {@link IWifiNanIface#initiateNanBootstrappingRequest(short, int, MacAddress, int, byte[], byte, boolean)}
      */
     public boolean initiateBootstrapping(short transactionId, int peerId, MacAddress peer,
-            int method, byte[] cookie, byte pubSubId, boolean isComeBack) {
+            int method, byte[] cookie, byte pubSubId, boolean isComeBack, byte[] ssi,
+            byte[] sdeaHeader) {
         return validateAndCall("initiateBootstrapping", false,
                 () -> mWifiNanIface.initiateNanBootstrappingRequest(transactionId, peerId, peer,
-                        method, cookie, pubSubId, isComeBack));
+                        method, cookie, pubSubId, isComeBack, ssi, sdeaHeader));
     }
     /**
      * {@link IWifiNanIface#respondToNanBootstrappingRequest(short, int, boolean, byte, int)}
@@ -793,21 +795,26 @@ public class WifiNanIface implements WifiHal.WifiInterface {
          *                They are passed from sender to receiver as-is with no parsing.
          */
         void eventDataPathRequest(byte discoverySessionId, byte[] peerDiscMacAddr,
-                int ndpInstanceId, byte[] appInfo);
+                int ndpInstanceId, byte[] appInfo, byte[] ndiInitMac);
 
         /**
          * Indicates that a data-path (NDP) setup has been completed. Received by both the
          * Initiator and Responder.
-         * @param status Status the operation (see {@link NanStatusCode}).
-         * @param ndpInstanceId ID of the data-path.
+         *
+         * @param status               Status the operation (see {@link NanStatusCode}).
+         * @param ndpInstanceId        ID of the data-path.
          * @param dataPathSetupSuccess Indicates whether the data-path setup succeeded (true)
          *                             or failed (false).
-         * @param peerNdiMacAddr MAC address of the peer's data-interface (not its
-         *                       management/discovery interface).
-         * @param appInfo Arbitrary information communicated from the peer as part of the
-         *                data-path setup process. There is no semantic meaning to  these bytes.
-         *                They are passed from sender to receiver as-is with no parsing.
-         * @param channelInfos
+         * @param peerNdiMacAddr       MAC address of the peer's data-interface (not its
+         *                             management/discovery interface).
+         * @param appInfo              Arbitrary information communicated from the peer as part of
+         *                             the
+         *                             data-path setup process. There is no semantic meaning to
+         *                             these bytes.
+         *                             They are passed from sender to receiver as-is with no
+         *                             parsing.
+         * @param channelInfos         Channel information for the data-path.
+         *
          */
         void eventDataPathConfirm(int status, int ndpInstanceId, boolean dataPathSetupSuccess,
                 byte[] peerNdiMacAddr, byte[] appInfo, List<WifiAwareChannelInfo> channelInfos);
@@ -840,26 +847,33 @@ public class WifiNanIface implements WifiHal.WifiInterface {
          * Indicates that the pairing is finished
          */
         void eventPairingConfirm(int pairingId, boolean accept, int reason, int requestType,
-                boolean enableCache,
-                PairingConfigManager.PairingSecurityAssociationInfo npksa);
+                boolean enableCache);
 
         /**
          * Indicates that the bootstrapping request is from the peer device.
          */
         void eventBootstrappingRequest(int discoverySessionId, int peerId, byte[] peerDiscMacAddr,
-                int bootstrappingInstanceId, int method);
+                int bootstrappingInstanceId, int method, byte[] serviceSpecificInfo);
 
         /**
          * Indicates that the bootstrapping is finished
          */
-        void eventBootstrappingConfirm(int pairingId, int responseCode, int reason,
-                int comebackDelay, byte[] cookie);
+        void eventBootstrappingConfirm(int sessionId, int pairingId, int responseCode, int reason,
+                int comebackDelay, int bootstrappingMethod, byte[] cookie, byte[] peerMacAddr);
 
         /**
          * Indicates that the suspension mode has changed, i.e., the device has entered or exited
          * the suspension mode
          */
         void eventSuspensionModeChanged(boolean isSuspended);
+
+        /**
+         * Indicates that the security association has been received. Will be used for pairing
+         * verification
+         */
+        void eventPairingSecurityAssociationReceived(int pairId,
+                PairingConfigManager.PairingSecurityAssociationInfo npksa);
+
 
         /**
          * Invoked when ranging results are available.

@@ -18,6 +18,7 @@ package com.android.server.wifi;
 
 import static com.android.server.wifi.HalDeviceManagerUtil.jsonToStaticChipInfo;
 import static com.android.server.wifi.HalDeviceManagerUtil.staticChipInfoToJson;
+import static com.android.server.wifi.WifiSettingsConfigStore.D2D_ALLOWED_WHEN_INFRA_STA_DISABLED;
 import static com.android.server.wifi.WifiSettingsConfigStore.WIFI_STATIC_CHIP_INFO;
 import static com.android.server.wifi.util.GeneralUtil.longToBitset;
 
@@ -34,6 +35,7 @@ import android.net.wifi.OuiKeyedData;
 import android.net.wifi.WifiContext;
 import android.net.wifi.WifiScanner;
 import android.net.wifi.p2p.WifiP2pManager;
+import android.net.wifi.util.Environment;
 import android.os.Handler;
 import android.os.WorkSource;
 import android.text.TextUtils;
@@ -176,7 +178,7 @@ public class HalDeviceManager {
                             && networkInfo.getDetailedState()
                                     == NetworkInfo.DetailedState.CONNECTED;
                 }};
-        if (mFeatureFlags.monitorIntentForAllUsers()) {
+        if (mFeatureFlags.monitorIntentForAllUsers() && Environment.isSdkAtLeastC()) {
             mContext.registerReceiverForAllUsers(
                     p2pConnectionChangedReceiver, intentFilter, null, mEventHandler);
         } else {
@@ -343,7 +345,7 @@ public class HalDeviceManager {
         }
         WifiStaIface staIface = (WifiStaIface) createIface(HDM_CREATE_IFACE_STA,
                 requiredChipCapabilities, destroyedListener, handler, requestorWs, null,
-                false /* isUsingMultiLinkOperation */);
+                /* isUsingMultiLinkOperation */ false);
         if (staIface != null) {
             mClientModeManagers.put(getName(staIface), concreteClientModeManager);
         }
@@ -405,7 +407,7 @@ public class HalDeviceManager {
             @Nullable Handler handler, @NonNull WorkSource requestorWs) {
         WifiP2pIface iface = (WifiP2pIface) createIface(HDM_CREATE_IFACE_P2P,
                 requiredChipCapabilities, destroyedListener, handler, requestorWs, null,
-                false /* isUsingMultiLinkOperation */);
+                /* isUsingMultiLinkOperation */ false);
         if (iface == null) {
             return null;
         }
@@ -433,7 +435,7 @@ public class HalDeviceManager {
             @Nullable Handler handler, @NonNull WorkSource requestorWs) {
         return (WifiNanIface) createIface(HDM_CREATE_IFACE_NAN, CHIP_CAPABILITY_ANY,
                 destroyedListener, handler, requestorWs, null,
-                false /* isUsingMultiLinkOperation */);
+                /* isUsingMultiLinkOperation */false);
     }
 
     /**
@@ -2173,6 +2175,11 @@ public class HalDeviceManager {
         return false;
     }
 
+    private boolean isD2dAllowedWhenInfraStaDisabled() {
+        return mWifiInjector.getSettingsConfigStore().get(D2D_ALLOWED_WHEN_INFRA_STA_DISABLED)
+                && mWifiInjector.getWifiGlobals().isD2dSupportedWhenInfraStaDisabled();
+    }
+
     /**
      * Returns whether interface request from |newRequestorWsPriority| is allowed to delete an
      * interface request from |existingRequestorWsPriority|.
@@ -2237,15 +2244,17 @@ public class HalDeviceManager {
                 return false;
             }
             // If both the requests are privileged, the new requestor wins unless it's P2P against
-            // AP (for when the user enables SoftAP with P2P Settings open) or primary STA
-            // (since P2P isn't supported without STA).
+            // AP or primary STA.
             if (newRequestorWsPriority == WorkSourceHelper.PRIORITY_PRIVILEGED) {
                 if (requestedCreateType == HDM_CREATE_IFACE_P2P) {
+                    // Don't allow P2P to override AP. See b/211950307 for details.
                     if (existingCreateType == HDM_CREATE_IFACE_AP
                             || existingCreateType == HDM_CREATE_IFACE_AP_BRIDGE) {
                         return false;
                     }
-                    if (existingCreateType == HDM_CREATE_IFACE_STA) {
+                    // If P2P requires STA, don't allow it to override the primary STA.
+                    if (existingCreateType == HDM_CREATE_IFACE_STA
+                            && !isD2dAllowedWhenInfraStaDisabled()) {
                         ConcreteClientModeManager cmm = mClientModeManagers.get(
                                 existingIfaceInfo.name);
                         if (cmm != null && (cmm.getRole()
@@ -2596,24 +2605,18 @@ public class HalDeviceManager {
 
             // create new interface
             WifiHal.WifiInterface iface = null;
-            switch (createIfaceType) {
-                case HDM_CREATE_IFACE_STA:
-                    iface = ifaceCreationData.chipInfo.chip.createStaIface();
-                    break;
-                case HDM_CREATE_IFACE_AP_BRIDGE:
-                    iface = ifaceCreationData.chipInfo.chip.createBridgedApIface(vendorData,
-                            isUsingMultiLinkOperation);
-                    break;
-                case HDM_CREATE_IFACE_AP:
-                    iface = ifaceCreationData.chipInfo.chip.createApIface(vendorData);
-                    break;
-                case HDM_CREATE_IFACE_P2P:
-                    iface = ifaceCreationData.chipInfo.chip.createP2pIface();
-                    break;
-                case HDM_CREATE_IFACE_NAN:
-                    iface = ifaceCreationData.chipInfo.chip.createNanIface();
-                    break;
-            }
+
+            iface = switch (createIfaceType) {
+                case HDM_CREATE_IFACE_STA -> ifaceCreationData.chipInfo.chip.createStaIface();
+                case HDM_CREATE_IFACE_AP_BRIDGE ->
+                        ifaceCreationData.chipInfo.chip.createBridgedApIface(vendorData,
+                                isUsingMultiLinkOperation);
+                case HDM_CREATE_IFACE_AP -> ifaceCreationData.chipInfo.chip.createApIface(
+                        vendorData);
+                case HDM_CREATE_IFACE_P2P -> ifaceCreationData.chipInfo.chip.createP2pIface();
+                case HDM_CREATE_IFACE_NAN -> ifaceCreationData.chipInfo.chip.createNanIface();
+                default -> iface;
+            };
 
             updateRttControllerWhenInterfaceChanges();
 

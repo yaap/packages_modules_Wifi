@@ -582,7 +582,7 @@ public class WifiConfiguration implements Parcelable {
      * This API would clear existing security types and add a default one.
      *
      * Before calling this API with {@link #SECURITY_TYPE_DPP} as securityType,
-     * call {@link WifiManager#isEasyConnectDppAkmSupported() to know whether this security type is
+     * call {@link WifiManager#isEasyConnectDppAkmSupported()} to know whether this security type is
      * supported or not.
      *
      * @param securityType One of the following security types:
@@ -716,6 +716,7 @@ public class WifiConfiguration implements Parcelable {
     private boolean isWpa3EnterpriseConfiguration() {
         if (!allowedKeyManagement.get(KeyMgmt.WPA_EAP_SHA256)
                 && !allowedKeyManagement.get(KeyMgmt.WPA_EAP)
+                && !allowedKeyManagement.get(KeyMgmt.FT_EAP)
                 && !allowedKeyManagement.get(KeyMgmt.IEEE8021X)) {
             return false;
         }
@@ -1018,7 +1019,7 @@ public class WifiConfiguration implements Parcelable {
 
     /**
      * Set SAE Hash-toElement only mode enabled.
-     * Before calling this API, call {@link WifiManager#isWpa3SaeH2eSupported()
+     * Before calling this API, call {@link WifiManager#isWpa3SaeH2eSupported()}
      * to know whether WPA3 SAE Hash-toElement is supported or not.
      *
      * @param enable true if enabled; false otherwise.
@@ -1035,7 +1036,7 @@ public class WifiConfiguration implements Parcelable {
 
     /**
      * Set SAE Public-Key only mode enabled.
-     * Before calling this API, call {@link WifiManager#isWpa3SaePkSupported()
+     * Before calling this API, call {@link WifiManager#isWpa3SaePublicKeySupported()}
      * to know whether WPA3 SAE Public-Key is supported or not.
      *
      * @param enable true if enabled; false otherwise.
@@ -1494,6 +1495,12 @@ public class WifiConfiguration implements Parcelable {
     @SuppressLint("MutableBareField")
     @FlaggedApi(Flags.FLAG_MULTI_USER_WIFI_ENHANCEMENT)
     public boolean allowAutojoin = true;
+
+    /**
+     * If true, auto-join is allowed for this network when advanced protection is enabled.
+     * Default true.
+     */
+    private boolean mAllowedAutoJoinInAdvancedProtection = true;
 
     /**
      * Wi-Fi7 is enabled by user for this network.
@@ -3703,6 +3710,8 @@ public class WifiConfiguration implements Parcelable {
         if (updateIdentifier != null) sbuf.append(" updateIdentifier=").append(updateIdentifier);
         sbuf.append(" lcuid=").append(lastConnectUid);
         sbuf.append(" allowAutojoin=").append(allowAutojoin);
+        sbuf.append(" mAllowedAutoJoinInAdvancedProtection=")
+                .append(mAllowedAutoJoinInAdvancedProtection);
         sbuf.append(" noInternetAccessExpected=").append(noInternetAccessExpected);
         sbuf.append(" mostRecentlyConnected=").append(isMostRecentlyConnected);
 
@@ -4172,6 +4181,7 @@ public class WifiConfiguration implements Parcelable {
             numScorerOverrideAndSwitchedNetwork = source.numScorerOverrideAndSwitchedNetwork;
             numAssociation = source.numAssociation;
             allowAutojoin = source.allowAutojoin;
+            mAllowedAutoJoinInAdvancedProtection = source.mAllowedAutoJoinInAdvancedProtection;
             numNoInternetAccessReports = source.numNoInternetAccessReports;
             noInternetAccessExpected = source.noInternetAccessExpected;
             shared = source.shared;
@@ -4317,6 +4327,7 @@ public class WifiConfiguration implements Parcelable {
         dest.writeBoolean(mIsAllowedToUpdateByOtherUsers);
         dest.writeInt(persistentMacRandomizationSeed);
         dest.writeInt(mCreatorUserId);
+        dest.writeBoolean(mAllowedAutoJoinInAdvancedProtection);
     }
 
     /**
@@ -4449,6 +4460,7 @@ public class WifiConfiguration implements Parcelable {
                     config.mIsAllowedToUpdateByOtherUsers = in.readBoolean();
                     config.persistentMacRandomizationSeed = in.readInt();
                     config.mCreatorUserId = in.readInt();
+                    config.mAllowedAutoJoinInAdvancedProtection = in.readBoolean();
                     return config;
                 }
 
@@ -4619,7 +4631,7 @@ public class WifiConfiguration implements Parcelable {
 
         String key = getSsidAndSecurityTypeString();
         if (!shared) {
-            key += "-" + UserHandle.getUserHandleForUid(creatorUid).getIdentifier();
+            key += "-" + getCreatorUserIdInternal();
         }
         if (fromWifiNetworkSuggestion) {
             key += "_" + creatorName + "-" + carrierId + "-" + subscriptionId;
@@ -4831,11 +4843,10 @@ public class WifiConfiguration implements Parcelable {
      * @throws IllegalArgumentException when attempting to set a private ({@code shared} = false)
      *                                  configuration to true
      */
-    // TODO: b/394417020 - add @RequiresApi version as 2026 Q2 version
-    @RequiresApi(37)
+    @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
     @FlaggedApi(Flags.FLAG_MULTI_USER_WIFI_ENHANCEMENT)
     public void setAllowedToUpdateByOtherUsers(boolean isAllowed) {
-        if (!Environment.isSdkNewerThanB()) {
+        if (!Environment.isSdkAtLeastC()) {
             throw new UnsupportedOperationException();
         }
         if (!shared && isAllowed) {
@@ -4851,10 +4862,10 @@ public class WifiConfiguration implements Parcelable {
      * Note: The admin user still can remove this configuration even if the network is not allowed
      * to be updated by other users.
      */
-    @RequiresApi(37)
+    @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
     @FlaggedApi(Flags.FLAG_MULTI_USER_WIFI_ENHANCEMENT)
     public boolean isAllowedToUpdateByOtherUsers() {
-        if (!Environment.isSdkNewerThanB()) {
+        if (!Environment.isSdkAtLeastC()) {
             throw new UnsupportedOperationException();
         }
         return shared && mIsAllowedToUpdateByOtherUsers;
@@ -4879,7 +4890,8 @@ public class WifiConfiguration implements Parcelable {
         // when we can't identify it from creator uid
         int userIdFromUid = UserHandle.getUserHandleForUid(creatorUid).getIdentifier();
         if (Flags.multiUserWifiEnhancement()) {
-            return userIdFromUid == UserHandle.SYSTEM.getIdentifier()
+            return (userIdFromUid == UserHandle.SYSTEM.getIdentifier()
+                    && mCreatorUserId != -2 /* UserHandle.USER_CURRENT */)
                     ? mCreatorUserId : userIdFromUid;
         }
         return userIdFromUid;
@@ -4897,12 +4909,37 @@ public class WifiConfiguration implements Parcelable {
      * @hide
      */
     @SystemApi
-    @RequiresApi(37)
+    @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
     @FlaggedApi(Flags.FLAG_MULTI_USER_WIFI_ENHANCEMENT)
     public @UserIdInt int getCreatorUserId() {
-        if (!Environment.isSdkNewerThanB()) {
+        if (!Environment.isSdkAtLeastC()) {
             throw new UnsupportedOperationException();
         }
         return getCreatorUserIdInternal();
+    }
+
+    /**
+     * Sets whether auto-join is allowed for this network when advanced protection is enabled.
+     *
+     * @param enabled {@code true} to allow, {@code false} to disallow.
+     *
+     * @hide
+     */
+    @FlaggedApi(android.security.Flags.FLAG_AAPM_FEATURE_DISABLE_INSECURE_WIFI_AUTOJOIN)
+    @SystemApi
+    public void setAutoJoinInAdvancedProtectionModeEnabled(boolean enabled) {
+        mAllowedAutoJoinInAdvancedProtection = enabled;
+    }
+
+    /**
+     * Returns whether auto-join is allowed for this network when advanced protection is enabled.
+     *
+     * @return {@code true} if allowed, {@code false} otherwise.
+     * @hide
+     */
+    @FlaggedApi(android.security.Flags.FLAG_AAPM_FEATURE_DISABLE_INSECURE_WIFI_AUTOJOIN)
+    @SystemApi
+    public boolean isAutoJoinInAdvancedProtectionModeEnabled() {
+        return mAllowedAutoJoinInAdvancedProtection;
     }
 }

@@ -52,14 +52,15 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.isNull;
-import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.nullable;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.validateMockitoUsage;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.withSettings;
 
 import android.app.ActivityManager;
 import android.app.AppOpsManager;
@@ -69,6 +70,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.net.wifi.EAPConstants;
 import android.net.wifi.ISuggestionConnectionStatusListener;
@@ -84,6 +86,7 @@ import android.net.wifi.WifiSsid;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.hotspot2.pps.Credential;
 import android.net.wifi.hotspot2.pps.HomeSp;
+import android.net.wifi.util.Environment;
 import android.os.IBinder;
 import android.os.ParcelUuid;
 import android.os.RemoteException;
@@ -150,6 +153,8 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     private static final String TEST_FRIENDLY_NAME = "test_friendly_name";
     private static final String TEST_REALM = "realm.test.com";
     private static final String TEST_CARRIER_NAME = "test_carrier";
+    private static final String TEST_SSID_1 = "test_ssid_1";
+    private static final String TEST_SSID_2 = "test_ssid_2";
     private static final int TEST_UID_1 = 5667;
     private static final int TEST_UID_2 = 4537;
     private static final int TEST_UID_3 = 7837;
@@ -186,6 +191,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     private @Mock ISuggestionUserApprovalStatusListener mUserApprovalStatusListener;
     private @Mock IBinder mBinder;
     private @Mock ActivityManager mActivityManager;
+    private @Mock PackageManager mPackageManager;
     private @Mock WifiScoreCard mWifiScoreCard;
     private @Mock WifiKeyStore mWifiKeyStore;
     private @Mock WifiDialogManager.SimpleDialogBuilder mDialogBuilder;
@@ -223,14 +229,14 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
         mStaticMockSession = mockitoSession()
-                .mockStatic(WifiInjector.class)
-                .mockStatic(ActivityManager.class)
-                .mockStatic(Flags.class)
+                .mockStatic(ActivityManager.class, withSettings().lenient())
+                .mockStatic(Flags.class, withSettings().lenient())
+                .mockStatic(WifiInjector.class, withSettings().lenient())
                 .startMocking();
-        lenient().when(WifiInjector.getInstance()).thenReturn(mWifiInjector);
+        when(WifiInjector.getInstance()).thenReturn(mWifiInjector);
         // Mock necessary method and enable flag by default to make sure test won't be broken.
-        lenient().when(ActivityManager.getCurrentUser()).thenReturn(0);
-        lenient().when(Flags.multiUserWifiEnhancement()).thenReturn(true);
+        when(ActivityManager.getCurrentUser()).thenReturn(0);
+        when(Flags.multiUserWifiEnhancement()).thenReturn(true);
         mLooper = new TestLooper();
 
         mInorder = inOrder(mContext, mWifiPermissionsUtil);
@@ -274,6 +280,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
         when(mContext.getResources()).thenReturn(mResources);
         when(mContext.getSystemService(Context.APP_OPS_SERVICE)).thenReturn(mAppOpsManager);
         when(mContext.getSystemService(ActivityManager.class)).thenReturn(mActivityManager);
+        when(mContext.getSystemService(PackageManager.class)).thenReturn(mPackageManager);
         when(mContext.getSystemService(Context.LAYOUT_INFLATER_SERVICE))
                 .thenReturn(mock(LayoutInflater.class));
         when(mContext.getWifiOverlayApkPkgName()).thenReturn("test.com.android.wifi.resources");
@@ -356,6 +363,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
 
     @After
     public void cleanUp() throws Exception {
+        validateMockitoUsage();
         if (null != mStaticMockSession) {
             mStaticMockSession.finishMocking();
         }
@@ -5302,6 +5310,7 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
 
     @Test
     public void testUsingRegisterReceiverForAllUsersWhenFlagEnabled() throws Exception {
+        assumeTrue(Environment.isSdkAtLeastC());
         when(Flags.monitorIntentForAllUsers()).thenReturn(true);
         mWifiNetworkSuggestionsManager =
                 new WifiNetworkSuggestionsManager(
@@ -5320,5 +5329,63 @@ public class WifiNetworkSuggestionsManagerTest extends WifiBaseTest {
         verify(mContext).registerReceiverForAllUsers(any(BroadcastReceiver.class),
                 any(IntentFilter.class),
                 eq(null), any());
+    }
+    @Test
+    public void testRemoveSuggestionsForUser() throws Exception {
+        // Add a suggestion for user 0
+        int userId1 = 0;
+        int appId1 = 0;
+        int uid1 = UserHandle.getUid(userId1, appId1);
+        when(mPackageManager.getPackagesForUid(uid1)).thenReturn(new String[]{TEST_PACKAGE_1});
+        List<WifiNetworkSuggestion> suggestions1 = Collections.singletonList(
+                new WifiNetworkSuggestion.Builder().setSsid(TEST_SSID_1).build());
+        assertEquals(WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS,
+                mWifiNetworkSuggestionsManager.add(suggestions1, uid1, TEST_PACKAGE_1, null));
+
+        // Add a suggestion for user 1
+        int userId2 = 1;
+        int appId2 = 1;
+        int uid2 = UserHandle.getUid(userId2, appId2);
+        when(mPackageManager.getPackagesForUid(uid2)).thenReturn(new String[]{TEST_PACKAGE_2});
+        List<WifiNetworkSuggestion> suggestions2 = Collections.singletonList(
+                new WifiNetworkSuggestion.Builder().setSsid(TEST_SSID_2).build());
+        assertEquals(WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS,
+                mWifiNetworkSuggestionsManager.add(suggestions2, uid2, TEST_PACKAGE_2, null));
+
+        // verify both are present
+        assertEquals(2, mWifiNetworkSuggestionsManager.getAllNetworkSuggestions().size());
+
+        // remove for user 1
+        mWifiNetworkSuggestionsManager.removeSuggestionsForUser(userId2);
+
+        // verify only suggestions from user 0 remain
+        List<WifiNetworkSuggestion> user0Suggestions =
+                mWifiNetworkSuggestionsManager.get(TEST_PACKAGE_1, uid1);
+        assertEquals(1, user0Suggestions.size());
+        List<WifiNetworkSuggestion> user1Suggestions =
+                mWifiNetworkSuggestionsManager.get(TEST_PACKAGE_2, uid2);
+        assertEquals(0, user1Suggestions.size());
+    }
+
+    @Test
+    public void testFromDeserialized_filtersSuggestionsFromRemovedUser() {
+        Map<String, PerAppInfo> networkSuggestionsMap = new HashMap<>();
+        // uid for user 0
+        PerAppInfo appInfo1 = new PerAppInfo(TEST_UID_1, TEST_PACKAGE_1, null);
+        // uid for user 1
+        PerAppInfo appInfo2 = new PerAppInfo(TEST_UID_2, TEST_PACKAGE_2, null);
+        networkSuggestionsMap.put(TEST_PACKAGE_1, appInfo1);
+        networkSuggestionsMap.put(TEST_PACKAGE_2, appInfo2);
+        when(mWifiPermissionsUtil.doesUidBelongToCurrentUserOrDeviceOwner(TEST_UID_1))
+                .thenReturn(true);
+        when(mWifiPermissionsUtil.doesUidBelongToCurrentUserOrDeviceOwner(TEST_UID_2))
+                .thenReturn(false);
+
+        mDataSource.fromDeserialized(networkSuggestionsMap);
+
+        Map<String, PerAppInfo> activeSuggestions = mDataSource.toSerialize();
+        assertEquals(1, activeSuggestions.size());
+        assertTrue(activeSuggestions.containsKey(TEST_PACKAGE_1));
+        assertFalse(activeSuggestions.containsKey(TEST_PACKAGE_2));
     }
 }

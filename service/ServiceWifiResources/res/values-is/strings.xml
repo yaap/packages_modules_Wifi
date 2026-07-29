@@ -19,7 +19,7 @@
     <string name="wifiResourcesAppLabel" product="default" msgid="3120115613525263696">"Kerfistilföng fyrir Wi-Fi"</string>
     <string name="wifi_available_title" msgid="3899472737467127635">"Tengjast opnu Wi-Fi neti"</string>
     <string name="wifi_available_title_connecting" msgid="7233590022728579868">"Tengist við Wi-Fi net"</string>
-    <string name="wifi_available_title_connected" msgid="6329493859989844201">"Tengt við Wi‑Fi net"</string>
+    <string name="wifi_available_title_connected" msgid="6329493859989844201">"Tengt við Wi‑Fi-net"</string>
     <string name="wifi_available_title_failed_to_connect" msgid="4840833680513368639">"Ekki hægt að tengjast Wi-Fi neti"</string>
     <string name="wifi_available_content_failed_to_connect" msgid="4330035988269701861">"Ýttu til að sjá öll netkerfi"</string>
     <string name="wifi_available_action_connect" msgid="5636634933476946222">"Tengjast"</string>
@@ -218,4 +218,11 @@
     <string name="wifi_network_switch_dialog_title_bad_internet" msgid="6013385270249705547">"<xliff:g id="SSID_0">%1$s</xliff:g> er í lélegum gæðum. Skipta yfir í <xliff:g id="SSID_1">%2$s</xliff:g>?"</string>
     <string name="wifi_network_switch_dialog_positive_button" msgid="7845507995422722454">"Skipta"</string>
     <string name="wifi_network_switch_dialog_negative_button" msgid="1496665895689498806">"Ekki skipta"</string>
+    <string name="wifi_disconnect_dialog_title" msgid="7541989406466882747">"Viltu aftengjast frá <xliff:g id="APP_NAME">%1$s</xliff:g>?"</string>
+    <string name="wifi_disconnect_dialog_message" msgid="5116841532118842227">"Ef þú aftengist þessu netkerfi mun <xliff:g id="APP_NAME">%1$s</xliff:g> aftengjast."</string>
+    <string name="wifi_disconnect_dialog_positive_button" msgid="1193888906224230855">"Aftengja"</string>
+    <string name="wifi_disconnect_dialog_negative_button" msgid="5075682597077355859">"Hætta við"</string>
+    <string name="wifi_disconnect_dialog_new_connection_title" msgid="6276398076311281426">"Tengjast öðru Wi-Fi neti?"</string>
+    <string name="wifi_disconnect_dialog_new_connection_message" msgid="2830348590173029295">"Ef þú tengist <xliff:g id="SSID">%2$s</xliff:g> verður <xliff:g id="APP_NAME">%1$s</xliff:g> aftengt."</string>
+    <string name="wifi_disconnect_dialog_new_connection_positive_button" msgid="4891994857934666730">"Tengja"</string>
 </resources>

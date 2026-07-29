@@ -177,7 +177,7 @@ public class WakeupController {
         mContentObserver = new ContentObserver(mHandler) {
             @Override
             public void onChange(boolean selfChange) {
-                if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+                if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkAtLeastC()) {
                     synchronized (mLock) {
                         boolean oldValue = mWifiWakeupEnabled;
                         readWifiWakeupEnabledFromSettings();
@@ -199,7 +199,7 @@ public class WakeupController {
                 Settings.Global.WIFI_WAKEUP_ENABLED), true, mContentObserver);
         readWifiWakeupEnabledFromSettings();
 
-        if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+        if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkAtLeastC()) {
             mWifiSettingsConfigStore.registerChangeListener(
                     WifiSettingsConfigStore.WIFI_WAKEUP_ENABLED, (key, value) -> {
                         updateWifiWakeupEnabledFromSettingsConfigStore(value);
@@ -233,7 +233,7 @@ public class WakeupController {
                     mContext, Settings.Global.WIFI_WAKEUP_ENABLED, 0) == 1;
             Log.d(TAG, "Settings.Global: WifiWake " + (mWifiWakeupEnabled ? "enabled"
                     : "disabled"));
-            if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()
+            if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkAtLeastC()
                     && mWifiWakeupEnabled != mWifiSettingsConfigStore.get(
                     WifiSettingsConfigStore.WIFI_WAKEUP_ENABLED)) {
                 mWifiSettingsConfigStore.put(WifiSettingsConfigStore.WIFI_WAKEUP_ENABLED,
@@ -275,7 +275,7 @@ public class WakeupController {
      */
     public void setEnabled(boolean enable) {
         synchronized (mLock) {
-            if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()
+            if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkAtLeastC()
                     && mWifiWakeupEnabled != enable) {
                 // It is important for new builds to set mWifiWakeupEnabled immediately, instead of
                 // delegating to callbacks (e.g. old build relies on onChange to maintain

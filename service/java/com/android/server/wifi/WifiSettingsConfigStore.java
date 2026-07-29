@@ -236,6 +236,25 @@ public class WifiSettingsConfigStore {
      */
     public static final Key<Boolean> WIFI_WAKEUP_ENABLED = new Key<>("wifi_wakeup_enabled", false);
 
+    /**
+     * Store the default value for {@link #WIFI_WAKEUP_ENABLED} from SettingsProvider.
+     */
+    public static final Key<Boolean> DEFAULT_WIFI_WAKEUP_ENABLED =
+            new Key<>("default_wifi_wakeup_enabled", true);
+
+    /**
+     * Store the default value for {@link #WIFI_SCAN_ALWAYS_AVAILABLE} from SettingsProvider.
+     */
+    public static final Key<Boolean> DEFAULT_WIFI_SCAN_ALWAYS_AVAILABLE =
+            new Key<>("default_wifi_scan_always_enabled", false);
+
+    /**
+     * Store the default value for {@link #WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON} from
+     * SettingsProvider.
+     */
+    public static final Key<Boolean> DEFAULT_WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON =
+            new Key<>("default_wifi_networks_available_notification_on", true);
+
     /******** Wifi shared pref keys ***************/
 
     private final Context mContext;
@@ -245,6 +264,8 @@ public class WifiSettingsConfigStore {
     private final FeatureFlags mFeatureFlags;
     private final FrameworkFacade mFrameworkFacade;
     private final UserManager mUserManager;
+    private int mCurrentUserId = UserHandle.SYSTEM.getIdentifier();
+    private boolean mVerboseLoggingEnabled = false;
 
     private final Object mLock = new Object();
     @GuardedBy("mLock")
@@ -303,8 +324,7 @@ public class WifiSettingsConfigStore {
                 WIFI_WEP_ALLOWED,
                 D2D_ALLOWED_WHEN_INFRA_STA_DISABLED
         ));
-
-        if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+        if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
             // Register data store for user-specific settings.
             wifiConfigStore.registerStoreData(new UserStoreData());
             // Register new user-specific keys that don't originally support B&R in old build. When
@@ -369,7 +389,7 @@ public class WifiSettingsConfigStore {
     private void triggerSaveToStoreAndInvokeUserPrivateOrAllListeners(boolean isUserPrivateOnly) {
         mHandler.post(() -> {
             Iterable<Key> keys = sKeys;
-            if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+            if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
                 mHasNewUserStoreDataToSerialize = true;
                 if (!isUserPrivateOnly) {
                     mHasNewSharedStoreDataToSerialize = true;
@@ -388,7 +408,7 @@ public class WifiSettingsConfigStore {
      */
     private <T> void triggerSaveToStoreAndInvokeListeners(@NonNull Key<T> key) {
         mHandler.post(() -> {
-            if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()
+            if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()
                     && mUserPrivateKeys.contains(key)) {
                 mHasNewUserStoreDataToSerialize = true;
             } else {
@@ -424,7 +444,38 @@ public class WifiSettingsConfigStore {
                 mCachedMigrationData.isScanThrottleEnabled());
         mSettings.put(WIFI_VERBOSE_LOGGING_ENABLED.key,
                 mCachedMigrationData.isVerboseLoggingEnabled());
+        if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
+            // Ensure the global default values (DEFAULT_WIFI_*) are loaded into mSettings
+            // during the initial settings migration.
+            loadDefaultValuesFromGlobalSettingsIfNeeded();
+        }
         triggerSaveToStoreAndInvokeUserPrivateOrAllListeners(false /* isUserPrivateOnly */);
+    }
+
+    /**
+     * Loads the default values for specific Wi-Fi settings from {@link Settings.Global}
+     * and populates the local settings map if they are not already present.
+     */
+    private void loadDefaultValuesFromGlobalSettingsIfNeeded() {
+        final Map<Key<Boolean>, String> globalSettingsKeyMap = Map.of(
+                DEFAULT_WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON,
+                Settings.Global.WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON,
+                DEFAULT_WIFI_WAKEUP_ENABLED,
+                Settings.Global.WIFI_WAKEUP_ENABLED,
+                DEFAULT_WIFI_SCAN_ALWAYS_AVAILABLE,
+                WifiScanAlwaysAvailableSettingsCompatibility
+                        .SETTINGS_GLOBAL_WIFI_SCAN_ALWAYS_AVAILABLE
+        );
+        for (Map.Entry<Key<Boolean>, String> entry : globalSettingsKeyMap.entrySet()) {
+            Key<Boolean> configStoreKey = entry.getKey();
+            String settingsGlobalKey = entry.getValue();
+            if (!mSettings.containsKey(configStoreKey.key)) {
+                boolean value = mFrameworkFacade.getIntegerSetting(mContext,
+                        settingsGlobalKey, configStoreKey.defaultValue ? 1 : 0) == 1;
+                Log.i(TAG, "prepare default value " + value + " for key " + configStoreKey.key);
+                mSettings.put(configStoreKey.key, value);
+            }
+        }
     }
 
     /**
@@ -449,7 +500,10 @@ public class WifiSettingsConfigStore {
                 WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON,
                 Settings.Global.WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON,
                 WIFI_WAKEUP_ENABLED,
-                Settings.Global.WIFI_WAKEUP_ENABLED
+                Settings.Global.WIFI_WAKEUP_ENABLED,
+                WIFI_SCAN_ALWAYS_AVAILABLE,
+                WifiScanAlwaysAvailableSettingsCompatibility
+                        .SETTINGS_GLOBAL_WIFI_SCAN_ALWAYS_AVAILABLE
         );
         keysForMigrationFromSettingsGlobal.forEach((configStoreKey, settingsGlobalKey) -> {
             if (mSharedToPrivateMigrationDataHolder.containsKey(configStoreKey.key)) {
@@ -470,14 +524,18 @@ public class WifiSettingsConfigStore {
         // Key.defaultValue when not retrieved from SharedStoreData.
         final List<Key> keysForMigrationFromDefaultValue = List.of(
                 WIFI_WEP_ALLOWED /* no Settings.Global */,
-                D2D_ALLOWED_WHEN_INFRA_STA_DISABLED /* no Settings.Global */,
-                WIFI_SCAN_ALWAYS_AVAILABLE /* already migrated to SharedStoreData */
+                D2D_ALLOWED_WHEN_INFRA_STA_DISABLED /* no Settings.Global */
         );
         for (Key key : keysForMigrationFromDefaultValue) {
             if (!mSharedToPrivateMigrationDataHolder.containsKey(key.key)) {
                 mSharedToPrivateMigrationDataHolder.put(key.key, key.defaultValue);
             }
         }
+
+        // Ensure the global default values (DEFAULT_WIFI_*) are loaded into mSettings.
+        // This is necessary because migrateFromSharedToPrivateIfNeeded() relies on these
+        // DEFAULT_WIFI_* keys to assign initial values to new users.
+        loadDefaultValuesFromGlobalSettingsIfNeeded();
     }
 
     /**
@@ -499,8 +557,22 @@ public class WifiSettingsConfigStore {
                 // Don't migrate for new users, but still explicitly reset values to defaultValue so
                 // that the corresponding controllers can maintain their state properly on user
                 // switch.
+                final Map<Key, Key> defaultKeyMap = Map.of(
+                        WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON,
+                                DEFAULT_WIFI_NETWORKS_AVAILABLE_NOTIFICATION_ON,
+                        WIFI_WAKEUP_ENABLED, DEFAULT_WIFI_WAKEUP_ENABLED,
+                        WIFI_SCAN_ALWAYS_AVAILABLE, DEFAULT_WIFI_SCAN_ALWAYS_AVAILABLE
+                );
                 for (Key key : mUserPrivateKeys) {
-                    mSettings.put(key.key, key.defaultValue);
+                    Key defaultKey = defaultKeyMap.get(key);
+                    if (defaultKey != null) {
+                        Object defaultValue = get(defaultKey);
+                        Log.i(TAG, "Use default value " + defaultValue + " for key - " + key);
+                        mSettings.put(key.key, defaultValue);
+                    } else {
+                        Log.i(TAG, "Use key's default value for key - " + key);
+                        mSettings.put(key.key, key.defaultValue);
+                    }
                 }
             }
             triggerSaveToStoreAndInvokeUserPrivateOrAllListeners(true /* isUserPrivateOnly */);
@@ -594,6 +666,69 @@ public class WifiSettingsConfigStore {
     }
 
     /**
+     * Resets user-session related data, typically invoked on user stop or switch (through
+     * {@link UserStoreData#resetData}).
+     */
+    private void resetUserSessionData() {
+        synchronized (mLock) {
+            // It is worth noting that removing keys won't update the setting values in their
+            // corresponding controllers. Explicitly put a new value and invoke the listener are
+            // required, which are conducted in UserStoreData#deserializeData or
+            // migrateFromSharedToPrivateIfNeeded.
+            for (Key key : mUserPrivateKeys) {
+                mSettings.remove(key.key);
+            }
+            mHasNewUserStoreDataToSerialize = false;
+        }
+    }
+
+    /**
+     * Handles the switch to a different foreground user:
+     * - Currently, only updates {@link #mCurrentUserId} to be used by other handlers. The I/O of
+     *   all per-user settings data is maintained by {@link WifiConfigManager#handleUserSwitch} and
+     *   data reset is called by {@link UserStoreData#resetData} when data for new user is loaded.
+     *
+     * Need to be called when {@link com.android.server.SystemService#onUserSwitching} is invoked.
+     *
+     * @param userId The identifier of the new foreground user, after the switch.
+     */
+    public void handleUserSwitch(int userId) {
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "Handling user switch for " + userId);
+        }
+        if (userId == mCurrentUserId) {
+            Log.w(TAG, "User already in foreground " + userId);
+            return;
+        }
+        mCurrentUserId = userId;
+    }
+
+    /**
+     * Handles the stop of foreground user. This is needed to clear any user data. Note that we must
+     * call this method after user data is saved by {@link WifiConfigManager#handleUserStop}, which
+     * handles the serialization of all StoreData including {@link UserStoreData}.
+     *
+     * Need to be called when {@link com.android.server.SystemService#onUserStopping} is invoked.
+     *
+     * @param userId The identifier of the user that stopped.
+     */
+    public void handleUserStop(int userId) {
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "Handling user stop for " + userId);
+        }
+        if (userId == mCurrentUserId) {
+            resetUserSessionData();
+        }
+    }
+
+    /**
+     * Enable/disable verbose logging.
+     */
+    public void enableVerboseLogging(boolean enabled) {
+        mVerboseLoggingEnabled = enabled;
+    }
+
+    /**
      * Dump output for debugging.
      */
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
@@ -624,7 +759,7 @@ public class WifiSettingsConfigStore {
             pw.println(mCachedMigrationData.isVerboseLoggingEnabled());
             pw.println();
         }
-        if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+        if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
             pw.println("Migration data for shared to private settings migration:");
             for (Key key : mUserPrivateKeys) {
                 pw.print(key.key);
@@ -689,7 +824,7 @@ public class WifiSettingsConfigStore {
                 @Nullable WifiConfigStoreEncryptionUtil encryptionUtil)
                 throws XmlPullParserException, IOException {
             synchronized (mLock) {
-                if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+                if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
                     // Only serialize shared settings.
                     Map<String, Object> sharedSettings = new HashMap<>(mSettings);
                     for (Key key : mUserPrivateKeys) {
@@ -717,7 +852,7 @@ public class WifiSettingsConfigStore {
             if (values != null) {
                 synchronized (mLock) {
                     mSettings.putAll(values);
-                    if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+                    if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
                         // Invoke registered listeners for shared setting keys. Obtain shared keys
                         // by subtracting private keys from all keys.
                         Set<Key> sharedKeys = new HashSet<>(sKeys);
@@ -730,7 +865,7 @@ public class WifiSettingsConfigStore {
 
                 }
             }
-            if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()
+            if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()
                     && mUsersNeedMigration.isEmpty()) {
                 mUsersNeedMigration.addAll(mUserManager.getUserHandles(/* excludeDying= */ true));
                 prepareSharedToPrivateMigrationDataHolder(values);
@@ -741,7 +876,7 @@ public class WifiSettingsConfigStore {
         public void resetData() {
             synchronized (mLock) {
                 mSettings.clear();
-                if (mFeatureFlags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+                if (Environment.isSdkAtLeastC() && mFeatureFlags.multiUserWifiEnhancement()) {
                     mUsersNeedMigration.clear();
                     mSharedToPrivateMigrationDataHolder.clear();
                     mHasNewSharedStoreDataToSerialize = false;
@@ -814,16 +949,7 @@ public class WifiSettingsConfigStore {
 
         @Override
         public void resetData() {
-            synchronized (mLock) {
-                // It is worth noting that removing keys won't update the setting values in their
-                // corresponding controllers. Explicitly put a new value and invoke the listener are
-                // required, which are conducted in UserStoreData#deserializeData or
-                // migrateFromSharedToPrivateIfNeeded.
-                for (Key key : mUserPrivateKeys) {
-                    mSettings.remove(key.key);
-                }
-                mHasNewUserStoreDataToSerialize = false;
-            }
+            resetUserSessionData();
         }
 
         @Override

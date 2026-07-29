@@ -36,7 +36,7 @@ RUNTIME_PERMISSIONS = (
     'android.permission.ACCESS_COARSE_LOCATION',
     'android.permission.NEARBY_WIFI_DEVICES',
 )
-PACKAGE_NAME = constants.WIFI_AWARE_SNIPPET_PACKAGE_NAME
+PACKAGE_NAME = constants.WIFI_SNIPPET_PACKAGE_NAME
 
 _CALLBACK_NAME = constants.DiscoverySessionCallbackParamsType.CALLBACK_NAME
 _DEFAULT_TIMEOUT = constants.WAIT_WIFI_STATE_TIME_OUT.total_seconds()
@@ -54,7 +54,6 @@ class WiFiAwareDiscoveryWithRangingTest(base_test.BaseTestClass):
 
   def setup_class(self):
     # Register two Android devices.
-    logging.basicConfig(level=logging.INFO, force=True)
     self.ads = self.register_controller(android_device, min_number=2)
 
     def setup_device(device: android_device.AndroidDevice):

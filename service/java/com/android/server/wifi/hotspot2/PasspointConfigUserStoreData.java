@@ -372,7 +372,7 @@ public class PasspointConfigUserStoreData implements WifiConfigStore.StoreData {
         if (config == null) {
             throw new XmlPullParserException("Missing Passpoint configuration");
         }
-        int creatorUserId = (Environment.isSdkNewerThanB() && Flags.multiUserWifiEnhancement())
+        int creatorUserId = Environment.isSdkAtLeastC() && Flags.multiUserWifiEnhancement()
                 ? ActivityManager.getCurrentUser() : -2;
         PasspointProvider provider =  new PasspointProvider(config, mKeyStore,
                 mWifiCarrierInfoManager,

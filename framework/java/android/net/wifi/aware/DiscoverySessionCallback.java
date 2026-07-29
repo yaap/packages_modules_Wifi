@@ -17,9 +17,12 @@
 package android.net.wifi.aware;
 
 import static com.android.ranging.flags.Flags.FLAG_RANGING_RTT_ENABLED;
+import static com.android.wifi.flags.Flags.FLAG_MULTI_PEER_AWARE_DATAPATH;
+import static com.android.wifi.flags.Flags.FLAG_SEND_SERVICE_SPECIFIC_INFO_IN_BOOTSTRAPPING_REQUEST;
 
 import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.net.wifi.rtt.RangingResult;
 
@@ -194,9 +197,9 @@ public class DiscoverySessionCallback {
     /**
      * Called when a subscribe operation results in a
      * service discovery. Called when a Subscribe service was configured with a range requirement
-     * {@link SubscribeConfig.Builder#setMinDistanceMm(int)} and/or
-     * {@link SubscribeConfig.Builder#setMaxDistanceMm(int)} and the Publish service was configured
-     * with {@link PublishConfig.Builder#setRangingEnabled(boolean)}.
+     * {@link SubscribeConfig.Builder#setEgressDistanceMm(int)} and/or
+     * {@link SubscribeConfig.Builder#setIngressDistanceMm(int)} and the Publish service was
+     * configured with {@link PublishConfig.Builder#setRangingEnabled(boolean)}.
      * <p>
      * If either Publisher or Subscriber does not enable Ranging, or if Ranging is temporarily
      * disabled by the underlying device, service discovery proceeds without ranging and the
@@ -230,9 +233,9 @@ public class DiscoverySessionCallback {
     /**
      * Called when a subscribe operation results in a
      * service discovery. Called when a Subscribe service was configured with a range requirement
-     * {@link SubscribeConfig.Builder#setMinDistanceMm(int)} and/or
-     * {@link SubscribeConfig.Builder#setMaxDistanceMm(int)} and the Publish service was configured
-     * with {@link PublishConfig.Builder#setRangingEnabled(boolean)}.
+     * {@link SubscribeConfig.Builder#setEgressDistanceMm(int)} and/or
+     * {@link SubscribeConfig.Builder#setIngressDistanceMm(int)} and the Publish service was
+     * configured with {@link PublishConfig.Builder#setRangingEnabled(boolean)}.
      * <p>
      * If either Publisher or Subscriber does not enable Ranging, or if Ranging is temporarily
      * disabled by the underlying device, service discovery proceeds without ranging and the
@@ -303,7 +306,7 @@ public class DiscoverySessionCallback {
      * @param peerHandle An opaque handle to the peer matching our discovery operation.
      * @param reason Discovered service lost reason code. One of
      *               {@link WifiAwareManager#WIFI_AWARE_DISCOVERY_LOST_REASON_PEER_NOT_VISIBLE},
-     *               {@link WifiAwareManager#WIFI_AWARE_DISCOVERY_LOST_REASON_UNKNOWN
+     *               {@link WifiAwareManager#WIFI_AWARE_DISCOVERY_LOST_REASON_UNKNOWN}
      */
     public void onServiceLost(@NonNull PeerHandle peerHandle,
             @WifiAwareManager.DiscoveryLostReasonCode int reason) {
@@ -371,11 +374,34 @@ public class DiscoverySessionCallback {
      * The follow-up out-of-band bootstrapping can start
      *
      * @param peerHandle The bootstrapping peer handle
-     * @param method     The bootstrapping method accept by the peer
+     * @param method     The bootstrapping method accepted by the peer
+     *
      */
     public void onBootstrappingSucceeded(@NonNull PeerHandle peerHandle,
             @AwarePairingConfig.BootstrappingMethod int method){
 
+    }
+
+    /**
+     * Callback indicating that a Bootstrapping method negotiation succeeded.
+     * The follow-up out-of-band bootstrapping can start.
+     *
+     * <p>
+     * This variant is similar to {@link #onBootstrappingSucceeded(PeerHandle, int)}, but
+     * includes optional service specific information provided by the peer during the request.
+     *
+     * @param peerHandle The bootstrapping peer handle
+     * @param method     The bootstrapping method accepted by the peer
+     * @param message    An arbitrary byte array sent by the peer as part of its bootstrapping
+     *                   request {@link DiscoverySession#initiateBootstrappingRequest(PeerHandle, int, byte[])}.
+     *                   It will be non-null only on publisher side when the peer sets a message in
+     *                   its bootstrapping request. It will always be null on subscriber side.
+     */
+    @FlaggedApi(FLAG_SEND_SERVICE_SPECIFIC_INFO_IN_BOOTSTRAPPING_REQUEST)
+    public void onBootstrappingSucceeded(@NonNull PeerHandle peerHandle,
+            @AwarePairingConfig.BootstrappingMethod int method,
+            @Nullable byte[] message){
+        onBootstrappingSucceeded(peerHandle, method);
     }
 
     /**
@@ -396,6 +422,56 @@ public class DiscoverySessionCallback {
     @FlaggedApi(FLAG_RANGING_RTT_ENABLED)
     @SystemApi
     public void onRangingResultsReceived(@NonNull List<RangingResult> rangingResults) {
+
+    }
+
+    /**
+     * Callback indicating that a data path has been connected.
+     *
+     * @param peerHandle The peer's handle for the data path request.
+     * @param info The network information of the connected data path.
+     */
+    @FlaggedApi(FLAG_MULTI_PEER_AWARE_DATAPATH)
+    public void onDataPathConnected(@NonNull PeerHandle peerHandle,
+            @NonNull WifiAwareNetworkInfo info) {
+
+    }
+
+    /**
+     * Callback indicating that a data path request has failed.
+     *
+     * @param peerHandle The peer's handle for the data path request.
+     * @param reason The reason for the data path connection failure.
+     */
+    @FlaggedApi(FLAG_MULTI_PEER_AWARE_DATAPATH)
+    public void onDataPathRequestFailed(@NonNull PeerHandle peerHandle,
+            @AwareDataPathRequest.DataPathConnectionFailureReason int reason) {
+
+    }
+
+    /**
+     * Callback indicating that a data path has been disconnected. Could be triggered by either side
+     * calling {@link DiscoverySession#releaseDataPath(PeerHandle)}.
+     *
+     * @param peerHandle The peer's handle for the data path request.
+     */
+    @FlaggedApi(FLAG_MULTI_PEER_AWARE_DATAPATH)
+    public void onDataPathDisconnected(@NonNull PeerHandle peerHandle) {
+
+    }
+
+    /**
+     * Callback indicating that a data path request has been received.
+     * Caller should call {@link PublishDiscoverySession#acceptDataPathRequest(PeerHandle,
+     * AwareDataPathRequest)} to set up the data path.
+     * Or call {@link PublishDiscoverySession#rejectDataPathRequest(PeerHandle)} to reject the
+     * request.
+     *
+     * @param peerHandle The peer's handle for the data path request.
+     */
+
+    @FlaggedApi(FLAG_MULTI_PEER_AWARE_DATAPATH)
+    public void onDataPathRequestReceived(@NonNull PeerHandle peerHandle) {
 
     }
 }

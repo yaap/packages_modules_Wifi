@@ -16,7 +16,6 @@
 
 package com.android.server.wifi.nl80211;
 
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.util.Log;
@@ -44,7 +43,6 @@ public class GenericNetlinkMsg {
     private static final String TAG = "GenericNetlinkMsg";
     public static final int MIN_STRUCT_SIZE =
             StructNlMsgHdr.STRUCT_SIZE + StructGenNlMsgHdr.STRUCT_SIZE;
-    private static final int SHORT_ATTRIBUTE_SIZE = StructNlAttr.NLA_HEADERLEN + Short.BYTES;
 
     public final StructNlMsgHdr nlHeader;
     public final StructGenNlMsgHdr genNlHeader;
@@ -101,12 +99,88 @@ public class GenericNetlinkMsg {
      * @param attributeId of the attribute to retrieve
      * @return value if it exists, or null if an error was encountered
      */
+    @Nullable
     public Short getAttributeValueAsShort(short attributeId) {
         StructNlAttr attribute = getAttribute(attributeId);
-        if (attribute == null || attribute.nla_len != SHORT_ATTRIBUTE_SIZE) return null;
-        // StructNlAttr does not support retrieving shorts directly
-        ByteBuffer buffer = attribute.getValueAsByteBuffer();
-        return buffer.getShort();
+        if (attribute == null) return null;
+
+        final ByteBuffer byteBuffer = attribute.getValueAsByteBuffer();
+        if (byteBuffer == null || byteBuffer.remaining() != Short.BYTES) {
+            return null;
+        }
+        return byteBuffer.getShort();
+    }
+
+    /**
+     * Retrieve the value of an integer attribute, if it exists.
+     *
+     * @param attributeId of the attribute to retrieve
+     * @return value if it exists, or null if an error was encountered
+     */
+    @Nullable
+    public Integer getAttributeValueAsInteger(short attributeId) {
+        StructNlAttr attribute = getAttribute(attributeId);
+        if (attribute == null) return null;
+
+        return attribute.getValueAsInteger();
+    }
+
+    /**
+     * Retrieve the value of a long attribute, if it exists.
+     *
+     * @param attributeId of the attribute to retrieve
+     * @return value if it exists, or null if an error was encountered
+     */
+    @Nullable
+    public Long getAttributeValueAsLong(short attributeId) {
+        StructNlAttr attribute = getAttribute(attributeId);
+        if (attribute == null) return null;
+
+        return attribute.getValueAsLong();
+    }
+
+    /**
+     * Retrieve the value of a byte attribute, if it exists.
+     *
+     * @param attributeId of the attribute to retrieve
+     * @return value if it exists, or null if an error was encountered
+     */
+    @Nullable
+    public Byte getAttributeValueAsByte(short attributeId) {
+        StructNlAttr attribute = getAttribute(attributeId);
+        if (attribute == null) return null;
+
+        final ByteBuffer byteBuffer = attribute.getValueAsByteBuffer();
+        if (byteBuffer == null || byteBuffer.remaining() != Byte.BYTES) {
+            return null;
+        }
+        return byteBuffer.get();
+    }
+
+    /**
+     * Retrieve the value of a byte array attribute, if it exists.
+     *
+     * @param attributeId of the attribute to retrieve
+     * @return value if it exists, or null if an error was encountered
+     */
+    @Nullable
+    public byte[] getAttributeValueAsByteArray(short attributeId) {
+        StructNlAttr attribute = getAttribute(attributeId);
+        if (attribute == null) return null;
+        return attribute.nla_value;
+    }
+
+    /**
+     * Retrieve the value of a string attribute, if it exists.
+     *
+     * @param attributeId of the attribute to retrieve
+     * @return value if it exists, or null if an error was encountered
+     */
+    @Nullable
+    public String getAttributeValueAsString(short attributeId) {
+        StructNlAttr attribute = getAttribute(attributeId);
+        if (attribute == null) return null;
+        return attribute.getValueAsString();
     }
 
     /**
@@ -141,6 +215,20 @@ public class GenericNetlinkMsg {
             }
         }
         return true;
+    }
+
+    /**
+     * @return true if the provided Netlink flag is enabled.
+     */
+    public boolean isFlagEnabled(short flag) {
+        return (nlHeader.nlmsg_flags & flag) == flag;
+    }
+
+    /*
+     * @return The command identifier from the generic Netlink header.
+     */
+    public short getCommand() {
+        return genNlHeader.command;
     }
 
     /**
@@ -211,7 +299,7 @@ public class GenericNetlinkMsg {
     }
 
     /**
-     * Read a GenericNetlinkMsg from a ByteBuffer.
+     * Read a GenericNetlinkMsg from a native-order ByteBuffer.
      *
      * @return Parsed GenericNetlinkMsg object, or null if an error occurred.
      */
@@ -222,27 +310,21 @@ public class GenericNetlinkMsg {
             return null;
         }
 
-        ByteOrder originalByteOrder = byteBuffer.order();
-        byteBuffer.order(ByteOrder.nativeOrder());
-        try {
-            StructNlMsgHdr nlHeader = StructNlMsgHdr.parse(byteBuffer);
-            StructGenNlMsgHdr genNlHeader = StructGenNlMsgHdr.parse(byteBuffer);
-            if (nlHeader == null || genNlHeader == null) {
-                Log.e(TAG, "Unable to parse message headers");
-                return null;
-            }
-
-            int remainingSize = nlHeader.nlmsg_len - MIN_STRUCT_SIZE;
-            if (byteBuffer.remaining() < remainingSize) {
-                Log.e(TAG, "Byte buffer is smaller than the expected message size");
-                return null;
-            }
-            Map<Short, StructNlAttr> attributes = parseAttributesToMap(byteBuffer, remainingSize);
-            if (attributes == null) return null;
-            return new GenericNetlinkMsg(nlHeader, genNlHeader, attributes);
-        } finally {
-            byteBuffer.order(originalByteOrder);
+        StructNlMsgHdr nlHeader = StructNlMsgHdr.parse(byteBuffer);
+        StructGenNlMsgHdr genNlHeader = StructGenNlMsgHdr.parse(byteBuffer);
+        if (nlHeader == null || genNlHeader == null) {
+            Log.e(TAG, "Unable to parse message headers");
+            return null;
         }
+
+        int remainingSize = nlHeader.nlmsg_len - MIN_STRUCT_SIZE;
+        if (byteBuffer.remaining() < remainingSize) {
+            Log.e(TAG, "Byte buffer is smaller than the expected message size");
+            return null;
+        }
+        Map<Short, StructNlAttr> attributes = parseAttributesToMap(byteBuffer, remainingSize);
+        if (attributes == null) return null;
+        return new GenericNetlinkMsg(nlHeader, genNlHeader, attributes);
     }
 
     private static boolean attributesAreEqual(Map<Short, StructNlAttr> attributes,

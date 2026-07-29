@@ -51,7 +51,10 @@ public class Capabilities {
     public boolean isPeriodicRangingSupported;
     public int maxSupportedRangingPktBandWidth;
     public int maxSupportedRxChains;
+    public int supportedPeriodicRangingIntervals =
+            Characteristics.SUPPORTED_PERIODIC_RANGING_INTERVAL_NONE;
     public int ndpSessionLimit;
+    public int gtkCipherSuites;
 
     /**
      * Converts the internal capabilities to a parcelable & potentially app-facing
@@ -80,6 +83,8 @@ public class Capabilities {
         bundle.putInt(Characteristics.KEY_MAX_SUPPORTED_RANGING_PKT_BANDWIDTH,
                 maxSupportedRangingPktBandWidth);
         bundle.putInt(Characteristics.KEY_MAX_SUPPORTED_RX_CHAINS, maxSupportedRxChains);
+        bundle.putInt(Characteristics.KEY_SUPPORTED_PERIODIC_RANGING_INTERVALS,
+                supportedPeriodicRangingIntervals);
         return new Characteristics(bundle);
     }
 
@@ -108,6 +113,8 @@ public class Capabilities {
         j.put("maxQueuedTransmitMessages", maxQueuedTransmitMessages);
         j.put("maxSubscribeInterfaceAddresses", maxSubscribeInterfaceAddresses);
         j.put("supportedCipherSuites", supportedDataPathCipherSuites);
+        j.put("supportedPairingCipherSuites", supportedPairingCipherSuites);
+        j.put("gtkCipherSuites", gtkCipherSuites);
         j.put("isInstantCommunicationModeSupported", isInstantCommunicationModeSupported);
         j.put("isSetClusterIdSupported", isSetClusterIdSupported);
         j.put("isNanPairingSupported", isNanPairingSupported);
@@ -148,6 +155,10 @@ public class Capabilities {
                 + maxSubscribeInterfaceAddresses
                 + ", supportedCipherSuites="
                 + supportedDataPathCipherSuites
+                + ", supportedPairingCipherSuites="
+                + supportedPairingCipherSuites
+                + ", gtkCipherSuites="
+                + gtkCipherSuites
                 + ", isInstantCommunicationModeSupport="
                 + isInstantCommunicationModeSupported
                 + ", isNanPairingSupported="

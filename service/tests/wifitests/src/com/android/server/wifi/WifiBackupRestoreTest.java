@@ -226,6 +226,12 @@ public class WifiBackupRestoreTest extends WifiBaseTest {
         if (version >= 5) {
             backupDataStringBuilder.append(
                     "<boolean name=\"AllowedToUpdateByOtherUsers\" value=\"false\" />\n");
+            if (Environment.isSdkAtLeastC()
+                    && Flags.disableInsecureWifiAutojoinWhenAapmOn()) {
+                backupDataStringBuilder.append(
+                        "<boolean name=\"AllowedAutoJoinInAdvancedProtection\""
+                        + " value=\"true\" />\n");
+            }
         }
         if (version >= 3) {
             backupDataStringBuilder.append(WIFI_BACKUP_DATA_SECURITYPARAMSLIST);
@@ -1153,9 +1159,11 @@ public class WifiBackupRestoreTest extends WifiBaseTest {
     @Test
     public void testRestoreFromV1_5BackupData() {
         mCheckDump = false; // for skip case
-        assumeTrue(Environment.isSdkNewerThanB());
+        assumeTrue(Environment.isSdkAtLeastC());
         mCheckDump = true;
         when(Flags.multiUserWifiEnhancement()).thenReturn(true);
+        when(Flags.disableInsecureWifiAutojoinWhenAapmOn())
+                .thenReturn(true);
         List<WifiConfiguration> configurations = new ArrayList<>();
         configurations.add(createNetworkForConfigurationWithV1_5Data());
         String wifiBackupDataV5 = generateBackupDataFromVersion(5);

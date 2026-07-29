@@ -19,6 +19,7 @@ package com.android.server.wifi.nl80211;
 import static com.android.server.wifi.nl80211.NetlinkConstants.CTRL_ATTR_FAMILY_ID;
 import static com.android.server.wifi.nl80211.NetlinkConstants.CTRL_CMD_NEWFAMILY;
 import static com.android.server.wifi.nl80211.NetlinkConstants.GENL_ID_CTRL;
+import static com.android.server.wifi.nl80211.NetlinkConstants.NETLINK_GENERIC;
 import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_MULTICAST_GROUP_MLME;
 import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_MULTICAST_GROUP_REG;
 import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_MULTICAST_GROUP_SCAN;
@@ -27,31 +28,42 @@ import static com.android.server.wifi.nl80211.NetlinkConstants.NLMSG_ERROR;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.validateMockitoUsage;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
+import android.content.Context;
 import android.net.util.SocketUtils;
 import android.net.wifi.SynchronousExecutor;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.MessageQueue;
 import android.os.test.TestLooper;
+import android.system.ErrnoException;
 import android.system.Os;
+import android.system.OsConstants;
 
 import com.android.dx.mockito.inline.extended.ExtendedMockito;
 import com.android.modules.utils.BackgroundThread;
 import com.android.net.module.util.netlink.NetlinkUtils;
 import com.android.net.module.util.netlink.StructNlAttr;
+import com.android.net.module.util.netlink.StructNlMsgErr;
 import com.android.net.module.util.netlink.StructNlMsgHdr;
+import com.android.server.wifi.Clock;
+import com.android.server.wifi.FrameworkFacade;
+import com.android.server.wifi.WifiDeviceStateChangeManager;
+import com.android.server.wifi.WifiMetrics;
+import com.android.server.wifi.proto.WifiStatsLog;
 import com.android.wifi.flags.Flags;
 
 import org.junit.After;
@@ -80,6 +92,7 @@ public class Nl80211ProxyTest {
     private MockitoSession mSession;
     private TestLooper mWifiLooper;
     private Handler mWifiHandler;
+    private WifiMetrics mWifiMetrics;
 
     @Mock FileDescriptor mFileDescriptor;
     @Mock Nl80211Proxy.NetlinkResponseListener mResponseListener;
@@ -87,8 +100,12 @@ public class Nl80211ProxyTest {
     @Mock Looper mBackgroundLooper;
     @Mock MessageQueue mBackgroundMessageQueue;
     @Mock Nl80211BroadcastMonitor.Nl80211BroadcastCallback mBroadcastCallback;
+    @Mock Context mContext;
+    @Mock FrameworkFacade mFacade;
+    @Mock Clock mClock;
+    @Mock WifiDeviceStateChangeManager mWifiDeviceStateChangeManager;
 
-    @Captor ArgumentCaptor<List<GenericNetlinkMsg>> mMessageListCaptor;
+    @Captor ArgumentCaptor<Nl80211Response> mNl80211ResponseCaptor;
 
     @Before
     public void setUp() throws Exception {
@@ -100,20 +117,35 @@ public class Nl80211ProxyTest {
                 .mockStatic(NetlinkUtils.class, withSettings().lenient())
                 .mockStatic(Os.class)
                 .mockStatic(SocketUtils.class)
+                .mockStatic(WifiStatsLog.class)
                 .startMocking();
-        when(NetlinkUtils.netlinkSocketForProto(anyInt())).thenReturn(mFileDescriptor);
+        when(Os.socket(anyInt(), anyInt(), anyInt())).thenReturn(mFileDescriptor);
         when(Flags.nl80211ProxyEnabled()).thenReturn(true);
 
         // Use a test looper to dispatch events in the tests.
         mWifiLooper = new TestLooper();
         mWifiHandler = new Handler(mWifiLooper.getLooper());
+        mWifiMetrics =
+                new WifiMetrics(
+                        mContext,
+                        mFacade,
+                        mClock,
+                        mWifiLooper.getLooper(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        mWifiDeviceStateChangeManager,
+                        null);
 
         // Mock the background thread to avoid running the broadcast monitor.
         when(BackgroundThread.getHandler()).thenReturn(mBackgroundHandler);
         when(mBackgroundHandler.getLooper()).thenReturn(mBackgroundLooper);
         when(mBackgroundLooper.getQueue()).thenReturn(mBackgroundMessageQueue);
 
-        mDut = new Nl80211Proxy(mWifiHandler);
+        mDut = new Nl80211Proxy(mWifiHandler, mWifiMetrics);
         initializeDut();
     }
 
@@ -123,6 +155,41 @@ public class Nl80211ProxyTest {
         if (mSession != null) {
             mSession.finishMocking();
         }
+    }
+
+    @Test
+    public void testCreateNetlinkFileDescriptor_blocking_success() {
+        FileDescriptor fd = Nl80211Proxy.createNetlinkFileDescriptor(false);
+        assertNotNull(fd);
+        // Adjust times() to account for setUp() already creating a blocking FD.
+        ExtendedMockito.verify(() -> Os.socket(
+                OsConstants.AF_NETLINK,
+                OsConstants.SOCK_DGRAM | OsConstants.SOCK_CLOEXEC,
+                NETLINK_GENERIC), times(2));
+        ExtendedMockito.verify(() -> NetlinkUtils.connectToKernel(fd), times(2));
+    }
+
+    @Test
+    public void testCreateNetlinkFileDescriptor_nonBlocking_success() {
+        FileDescriptor fd = Nl80211Proxy.createNetlinkFileDescriptor(true);
+        assertNotNull(fd);
+        ExtendedMockito.verify(() -> Os.socket(
+                OsConstants.AF_NETLINK,
+                OsConstants.SOCK_DGRAM | OsConstants.SOCK_CLOEXEC | OsConstants.SOCK_NONBLOCK,
+                NETLINK_GENERIC));
+        // Adjust times() to account for setUp() already creating a blocking FD.
+        ExtendedMockito.verify(() -> NetlinkUtils.connectToKernel(fd), times(2));
+    }
+
+    @Test
+    public void testCreateNetlinkFileDescriptor_failure() {
+        ExtendedMockito.doThrow(new ErrnoException("Failed to create socket", OsConstants.EACCES))
+                .when(() -> Os.socket(anyInt(), anyInt(), anyInt()));
+
+        FileDescriptor actualFd = Nl80211Proxy.createNetlinkFileDescriptor(false);
+        assertNull(actualFd);
+        // Adjust times() to account for setUp() already creating a blocking FD.
+        ExtendedMockito.verify(() -> NetlinkUtils.connectToKernel(any()), times(1));
     }
 
     private void initializeDut() throws Exception {
@@ -145,6 +212,23 @@ public class Nl80211ProxyTest {
         responseMessage.pack(responseMsgBuffer);
         responseMsgBuffer.position(0); // reset to the beginning of the buffer
         return responseMsgBuffer;
+    }
+
+    /**
+     * Pack several instances of GenericNetlinkMsg into a ByteBuffer.
+     */
+    private ByteBuffer genericNetlinkMessagesToByteBuffer(
+            GenericNetlinkMsg... messages) throws Exception {
+        int requiredBufSize = 0;
+        for (GenericNetlinkMsg message : messages) {
+            requiredBufSize += message.nlHeader.nlmsg_len;
+        }
+        ByteBuffer buffer = Nl80211TestUtils.createByteBuffer(requiredBufSize);
+        for (GenericNetlinkMsg message : messages) {
+            message.pack(buffer);
+        }
+        buffer.position(0); // reset to the beginning of the buffer
+        return buffer;
     }
 
     /**
@@ -179,41 +263,117 @@ public class Nl80211ProxyTest {
     @Test
     public void testSendAndReceiveMessage() throws Exception {
         // Use a non-default command id to identify this as the response message
-        GenericNetlinkMsg expectedResponse = new GenericNetlinkMsg(
+        GenericNetlinkMsg expectedMsg = new GenericNetlinkMsg(
                 (short) (Nl80211TestUtils.TEST_COMMAND + 15),
                 Nl80211TestUtils.TEST_TYPE,
                 Nl80211TestUtils.TEST_FLAGS,
                 Nl80211TestUtils.TEST_SEQUENCE);
-        setResponseMessage(expectedResponse);
+        Nl80211Response expectedResponse = new Nl80211Response(expectedMsg);
+        setResponseMessage(expectedMsg);
         GenericNetlinkMsg requestMsg = Nl80211TestUtils.createTestMessage();
-        GenericNetlinkMsg receivedResponse = mDut.sendMessageAndReceiveResponse(requestMsg);
+        Nl80211Response receivedResponse = mDut.sendMessageAndReceiveResponse(requestMsg);
         assertTrue(expectedResponse.equals(receivedResponse));
     }
 
     /**
-     * Test that the messages after the error response are ignored.
+     * Test that the messages after the error response are ignored, and we get the error code in
+     * the response.
      */
     @Test
     public void testSendAndReceiveMessage_errorResponse() throws Exception {
-        // Use a non-default command id to identify this as the response message
-        GenericNetlinkMsg errorResponse = new GenericNetlinkMsg(
-                (short) (Nl80211TestUtils.TEST_COMMAND + 15),
+        GenericNetlinkMsg requestMsg = Nl80211TestUtils.createTestMessage();
+
+        // Create the error message, which should contain the error code followed by the Netlink
+        // header of the original request.
+        StructNlMsgHdr errorHdr = new StructNlMsgHdr(
+                StructNlMsgErr.STRUCT_SIZE,
                 NLMSG_ERROR,
-                Nl80211TestUtils.TEST_FLAGS,
+                StructNlMsgHdr.NLM_F_MULTI,
                 Nl80211TestUtils.TEST_SEQUENCE);
+        ByteBuffer errorBuf = Nl80211TestUtils.createByteBuffer(errorHdr.nlmsg_len);
+        errorHdr.pack(errorBuf);
+        errorBuf.putInt(-OsConstants.ENOENT); // Netlink error codes are negated.
+        requestMsg.nlHeader.pack(errorBuf);
+        errorBuf.position(0);
+
         // Message after the error response should be ignored.
         GenericNetlinkMsg extraResponse = new GenericNetlinkMsg(
                 (short) (Nl80211TestUtils.TEST_COMMAND + 15),
                 Nl80211TestUtils.TEST_TYPE,
                 StructNlMsgHdr.NLM_F_MULTI,
                 Nl80211TestUtils.TEST_SEQUENCE + 1);
+
         when(NetlinkUtils.recvMessage(any(), anyInt(), anyLong()))
-                .thenReturn(genericNetlinkMsgToByteBuffer(errorResponse))
+                .thenReturn(errorBuf)
                 .thenReturn(genericNetlinkMsgToByteBuffer(extraResponse));
+
+        Nl80211Response response = mDut.sendMessageAndReceiveResponse(requestMsg);
+
+        assertTrue(response.getMessages().isEmpty());
+        assertTrue(response.isError());
+        assertEquals(OsConstants.ENOENT, response.getErrorCode());
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED,
+                requestMsg.getCommand(),
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__RESPONSE_NLMSG_ERROR));
+    }
+
+    /**
+     * Test that we return an empty non-error response for an ack (ERROR message with code 0).
+     */
+    @Test
+    public void testSendAndReceiveMessage_ackResponse() throws Exception {
+        GenericNetlinkMsg requestMsg = Nl80211TestUtils.createTestMessageWithAckFlag();
+
+        // Create the error message, which should contain the error code followed by the Netlink
+        // header of the original request.
+        StructNlMsgHdr errorHdr = new StructNlMsgHdr(
+                StructNlMsgErr.STRUCT_SIZE,
+                NLMSG_ERROR,
+                StructNlMsgHdr.NLM_F_MULTI,
+                Nl80211TestUtils.TEST_SEQUENCE);
+        ByteBuffer errorBuf = Nl80211TestUtils.createByteBuffer(errorHdr.nlmsg_len);
+        errorHdr.pack(errorBuf);
+        errorBuf.putInt(0);
+        requestMsg.nlHeader.pack(errorBuf);
+        errorBuf.position(0);
+
+        when(NetlinkUtils.recvMessage(any(), anyInt(), anyLong()))
+                .thenReturn(errorBuf);
+
+        Nl80211Response response = mDut.sendMessageAndReceiveResponse(requestMsg);
+
+        assertNotNull(response);
+        assertFalse(response.isError());
+    }
+
+    /**
+     * Test that we return null for an ack response (ERROR message with code 0) if we didn't set the
+     * ack flag.
+     */
+    @Test
+    public void testSendAndReceiveMessage_ackResponseWithoutAckFlag_returnsNull() throws Exception {
         GenericNetlinkMsg requestMsg = Nl80211TestUtils.createTestMessage();
-        List<GenericNetlinkMsg> receivedResponses = mDut.sendMessageAndReceiveResponses(requestMsg);
-        assertEquals(1, receivedResponses.size());
-        assertTrue(errorResponse.equals(receivedResponses.get(0)));
+
+        // Create the error message, which should contain the error code followed by the Netlink
+        // header of the original request.
+        StructNlMsgHdr errorHdr = new StructNlMsgHdr(
+                StructNlMsgErr.STRUCT_SIZE,
+                NLMSG_ERROR,
+                StructNlMsgHdr.NLM_F_MULTI,
+                Nl80211TestUtils.TEST_SEQUENCE);
+        ByteBuffer errorBuf = Nl80211TestUtils.createByteBuffer(errorHdr.nlmsg_len);
+        errorHdr.pack(errorBuf);
+        errorBuf.putInt(0);
+        requestMsg.nlHeader.pack(errorBuf);
+        errorBuf.position(0);
+
+        when(NetlinkUtils.recvMessage(any(), anyInt(), anyLong()))
+                .thenReturn(errorBuf);
+
+        Nl80211Response response = mDut.sendMessageAndReceiveResponse(requestMsg);
+
+        assertNull(response);
     }
 
     /**
@@ -222,25 +382,92 @@ public class Nl80211ProxyTest {
      */
     @Test
     public void testSendAndReceiveMessage_multiPartResponse() throws Exception {
-        GenericNetlinkMsg response1 = new GenericNetlinkMsg(
+        // First batch will contain two messages
+        GenericNetlinkMsg msg1 = new GenericNetlinkMsg(
                 (short) (Nl80211TestUtils.TEST_COMMAND + 15),
                 Nl80211TestUtils.TEST_TYPE,
                 StructNlMsgHdr.NLM_F_MULTI,
                 Nl80211TestUtils.TEST_SEQUENCE);
-        // Message with NLMSG_DONE marks the end of the multipart response
-        // and should not be returned to the framework caller
-        GenericNetlinkMsg response2 = new GenericNetlinkMsg(
+        GenericNetlinkMsg msg2 = new GenericNetlinkMsg(
                 (short) (Nl80211TestUtils.TEST_COMMAND + 16),
+                Nl80211TestUtils.TEST_TYPE,
+                StructNlMsgHdr.NLM_F_MULTI,
+                Nl80211TestUtils.TEST_SEQUENCE);
+        // Second batch will contain a message with NLMSG_DONE,
+        // marking the end of the multipart response
+        StructNlMsgHdr doneHdr = new StructNlMsgHdr(
+                0,
                 NLMSG_DONE,
                 StructNlMsgHdr.NLM_F_MULTI,
                 Nl80211TestUtils.TEST_SEQUENCE);
+        ByteBuffer doneBuf = Nl80211TestUtils.createByteBuffer(doneHdr.nlmsg_len);
+        doneHdr.pack(doneBuf);
+        doneBuf.position(0);
+
         when(NetlinkUtils.recvMessage(any(), anyInt(), anyLong()))
-                .thenReturn(genericNetlinkMsgToByteBuffer(response1))
-                .thenReturn(genericNetlinkMsgToByteBuffer(response2));
+                .thenReturn(genericNetlinkMessagesToByteBuffer(msg1, msg2))
+                .thenReturn(doneBuf);
         GenericNetlinkMsg requestMsg = Nl80211TestUtils.createTestMessage();
-        List<GenericNetlinkMsg> receivedResponses = mDut.sendMessageAndReceiveResponses(requestMsg);
-        assertEquals(1, receivedResponses.size());
-        assertTrue(response1.equals(receivedResponses.get(0)));
+
+        Nl80211Response response = mDut.sendMessageAndReceiveResponse(requestMsg);
+
+        List<GenericNetlinkMsg> messages = response.getMessages();
+        assertEquals(2, messages.size());
+        assertTrue(msg1.equals(messages.get(0)));
+        assertTrue(msg2.equals(messages.get(1)));
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED,
+                requestMsg.getCommand(),
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__RESPONSE_NLMSG_DONE));
+    }
+
+    @Test
+    public void testReceiveNl80211Response_mixedSequenceNumbers_skipsMismatchedMessages()
+            throws Exception {
+        final int sentSeqNum = 10;
+        final int mismatchedSeqNum = sentSeqNum + 1;
+
+        GenericNetlinkMsg requestMsg = new GenericNetlinkMsg(
+                Nl80211TestUtils.TEST_COMMAND,
+                Nl80211TestUtils.TEST_TYPE,
+                Nl80211TestUtils.TEST_FLAGS,
+                sentSeqNum);
+        GenericNetlinkMsg correctResponse = new GenericNetlinkMsg(
+                (short) (Nl80211TestUtils.TEST_COMMAND + 2),
+                Nl80211TestUtils.TEST_TYPE,
+                StructNlMsgHdr.NLM_F_MULTI,
+                sentSeqNum);
+        StructNlMsgHdr doneHdr = new StructNlMsgHdr(
+                0, NLMSG_DONE, StructNlMsgHdr.NLM_F_MULTI, sentSeqNum);
+        ByteBuffer doneBuf = Nl80211TestUtils.createByteBuffer(doneHdr.nlmsg_len);
+        doneHdr.pack(doneBuf);
+        doneBuf.position(0);
+
+        GenericNetlinkMsg mismatchedResponse = new GenericNetlinkMsg(
+                (short) (Nl80211TestUtils.TEST_COMMAND + 1),
+                Nl80211TestUtils.TEST_TYPE,
+                StructNlMsgHdr.NLM_F_MULTI,
+                mismatchedSeqNum);
+        StructNlMsgHdr mismatchedDoneHdr = new StructNlMsgHdr(
+                0, NLMSG_DONE, StructNlMsgHdr.NLM_F_MULTI, mismatchedSeqNum);
+        ByteBuffer mismatchedDoneBuf =
+                Nl80211TestUtils.createByteBuffer(mismatchedDoneHdr.nlmsg_len);
+        mismatchedDoneHdr.pack(mismatchedDoneBuf);
+        mismatchedDoneBuf.position(0);
+
+        when(NetlinkUtils.recvMessage(any(), anyInt(), anyLong()))
+                .thenReturn(genericNetlinkMessagesToByteBuffer(mismatchedResponse))
+                .thenReturn(mismatchedDoneBuf)
+                .thenReturn(genericNetlinkMessagesToByteBuffer(correctResponse))
+                .thenReturn(doneBuf);
+
+        Nl80211Response response = mDut.sendMessageAndReceiveResponse(requestMsg);
+
+        // Mismatched message should be skipped, but we should still read the matching message.
+        assertNotNull(response);
+        assertFalse(response.isError());
+        assertEquals(1, response.getMessages().size());
+        assertTrue(correctResponse.equals(response.getMessages().get(0)));
     }
 
     /**
@@ -257,12 +484,17 @@ public class Nl80211ProxyTest {
         verify(mResponseListener, never()).onResponse(any());
 
         // Send and receive messages on the async handler
-        GenericNetlinkMsg response = Nl80211TestUtils.createTestMessage();
-        setResponseMessage(response);
+        GenericNetlinkMsg msg = Nl80211TestUtils.createTestMessage();
+        setResponseMessage(msg);
         mWifiLooper.dispatchAll();
 
-        verify(mResponseListener).onResponse(mMessageListCaptor.capture());
-        assertTrue(response.equals(mMessageListCaptor.getValue().get(0)));
+        verify(mResponseListener).onResponse(mNl80211ResponseCaptor.capture());
+        assertTrue(msg.equals(mNl80211ResponseCaptor.getValue().getMessages().get(0)));
+
+        ExtendedMockito.verify(() -> WifiStatsLog.write(
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED,
+                requestMsg.getCommand(),
+                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__RESPONSE_DONE_NO_MULTI));
     }
 
     /**
@@ -271,7 +503,7 @@ public class Nl80211ProxyTest {
     @Test
     public void testCreateNl80211Request() throws Exception {
         // Expect failure if the Nl80211Proxy has not been initialized
-        mDut = new Nl80211Proxy(mWifiHandler);
+        mDut = new Nl80211Proxy(mWifiHandler, mWifiMetrics);
         assertNull(mDut.createNl80211Request(Nl80211TestUtils.TEST_COMMAND));
 
         // Expect that the message can be created after initialization,
@@ -303,7 +535,7 @@ public class Nl80211ProxyTest {
     @Test
     public void testRegisterAndUnregisterBroadcastCallback() throws Exception {
         short eventType = 123;
-        mDut = new Nl80211Proxy(mWifiHandler);
+        mDut = new Nl80211Proxy(mWifiHandler, mWifiMetrics);
 
         // Expect failure before initialization
         assertFalse(mDut.registerBroadcastCallback(eventType, mBroadcastCallback));
@@ -313,5 +545,24 @@ public class Nl80211ProxyTest {
         initializeDut();
         assertTrue(mDut.registerBroadcastCallback(eventType, mBroadcastCallback));
         assertTrue(mDut.unregisterBroadcastCallback(eventType, mBroadcastCallback));
+    }
+
+    /**
+     * Test that a vendor request can be successfully created.
+     */
+    @Test
+    public void testCreateVendorRequest() {
+        final int ifIndex = 3;
+        final int vendorId = 123;
+        final int subcmd = 456;
+        GenericNetlinkMsg msg = mDut.createVendorRequest(ifIndex, vendorId, subcmd);
+        assertNotNull(msg);
+        assertEquals(NetlinkConstants.NL80211_CMD_VENDOR, msg.getCommand());
+        assertEquals(ifIndex,
+                (int) msg.getAttributeValueAsInteger(NetlinkConstants.NL80211_ATTR_IFINDEX));
+        assertEquals(vendorId,
+                (int) msg.getAttributeValueAsInteger(NetlinkConstants.NL80211_ATTR_VENDOR_ID));
+        assertEquals(subcmd,
+                (int) msg.getAttributeValueAsInteger(NetlinkConstants.NL80211_ATTR_VENDOR_SUBCMD));
     }
 }

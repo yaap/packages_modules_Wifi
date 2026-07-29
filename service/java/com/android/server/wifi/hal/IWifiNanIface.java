@@ -59,22 +59,20 @@ public interface IWifiNanIface {
     /**
      * Enable and configure Aware.
      *
-     * @param transactionId Transaction ID for the transaction - used in the
-     *            async callback to match with the original request.
-     * @param configRequest Requested Aware configuration.
-     * @param notifyIdentityChange Indicates whether to get address change callbacks.
-     * @param initialConfiguration Specifies whether initial configuration
-     *            (true) or an update (false) to the configuration.
-     * @param rangingEnabled Indicates whether to enable ranging.
+     * @param transactionId                 Transaction ID for the transaction - used in the
+     *                                      async callback to match with the original request.
+     * @param configRequest                 Requested Aware configuration.
+     * @param initialConfiguration          Specifies whether initial configuration
+     *                                      (true) or an update (false) to the configuration.
+     * @param rangingEnabled                Indicates whether to enable ranging.
      * @param isInstantCommunicationEnabled Indicates whether to enable instant communication
-     * @param instantModeChannel
-     * @param clusterId Indicate which cluster to join.
-     * @param macAddressRandomizationIntervalSec
-     * @param powerParameters Instance of {@link WifiNanIface.PowerParameters} containing the
-     *                        parameters to use in our config request.
+     * @param clusterId                     Indicate which cluster to join.
+     * @param powerParameters               Instance of {@link WifiNanIface.PowerParameters}
+     *                                      containing the
+     *                                      parameters to use in our config request.
      */
     boolean enableAndConfigure(short transactionId, ConfigRequest configRequest,
-            boolean notifyIdentityChange, boolean initialConfiguration, boolean rangingEnabled,
+            boolean initialConfiguration, boolean rangingEnabled,
             boolean isInstantCommunicationEnabled, int instantModeChannel, int clusterId,
             int macAddressRandomizationIntervalSec, WifiNanIface.PowerParameters powerParameters);
 
@@ -93,10 +91,11 @@ public interface IWifiNanIface {
      * @param publishId ID of the requested session - 0 to request a new publish
      *            session.
      * @param publishConfig Configuration of the discovery session.
-     * @param nanIdentityKey
+     * @param nanIdentityKey NAN identity key for pairing verification
+     * @param sdeaHeader Service descriptor extension header
      */
     boolean publish(short transactionId, byte publishId, PublishConfig publishConfig,
-            byte[] nanIdentityKey);
+            byte[] nanIdentityKey, byte[] sdeaHeader);
 
     /**
      * Start or modify a service subscription session.
@@ -105,10 +104,11 @@ public interface IWifiNanIface {
      * @param subscribeId ID of the requested session - 0 to request a new
      *            subscribe session.
      * @param subscribeConfig Configuration of the discovery session.
-     * @param nanIdentityKey
+     * @param nanIdentityKey NAN identity key for pairing verification
+     * @param sdeaHeader Service descriptor extension header
      */
     boolean subscribe(short transactionId, byte subscribeId, SubscribeConfig subscribeConfig,
-            byte[] nanIdentityKey);
+            byte[] nanIdentityKey, byte[] sdeaHeader);
 
     /**
      * Send a message through an existing discovery session.
@@ -121,9 +121,10 @@ public interface IWifiNanIface {
      * @param dest MAC address of the peer to communicate with - obtained
      *            together with requestorInstanceId.
      * @param message Message.
+     * @param sdeaHeader Service descriptor extension header
      */
     boolean sendMessage(short transactionId, byte pubSubId, int requestorInstanceId,
-            MacAddress dest, byte[] message);
+            MacAddress dest, byte[] message, byte[] sdeaHeader);
 
     /**
      * Terminate a publish discovery session.
@@ -217,7 +218,7 @@ public interface IWifiNanIface {
             String interfaceName, byte[] appInfo,
             boolean isOutOfBand, Capabilities capabilities,
             WifiAwareDataPathSecurityConfig securityConfig, byte pubSubId,
-            boolean frameProtectionEnabled);
+            boolean frameProtectionEnabled, byte[] peerMac, byte[] ndiInitMac);
 
     /**
      * Terminate an existing data-path (does not delete the interface).
@@ -284,10 +285,13 @@ public interface IWifiNanIface {
      * @param method        the proposed bootstrapping method
      * @param pubSubId      ID of the publish/subscribe session - obtained when creating a session.
      * @param isComeBack    If the request is for a previous comeback response
+     * @param ssi           Service specific information
+     * @param sdeaHeader    Service descriptor extension header
      * @return True if the request send succeed.
      */
     boolean initiateNanBootstrappingRequest(short transactionId, int peerId, MacAddress peer,
-            int method, byte[] cookie, byte pubSubId, boolean isComeBack);
+            int method, byte[] cookie, byte pubSubId, boolean isComeBack, byte[] ssi,
+            byte[] sdeaHeader);
 
     /**
      * Respond to a bootstrapping request

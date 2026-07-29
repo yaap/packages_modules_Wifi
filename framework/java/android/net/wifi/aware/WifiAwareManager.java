@@ -26,6 +26,8 @@ import static android.annotation.RestrictedForEnvironment.ENVIRONMENT_SDK_RUNTIM
 import static android.net.wifi.ScanResult.WIFI_BAND_24_GHZ;
 import static android.net.wifi.ScanResult.WIFI_BAND_5_GHZ;
 
+import static com.android.wifi.flags.Flags.FLAG_SEND_SERVICE_SPECIFIC_INFO_IN_BOOTSTRAPPING_REQUEST;
+
 import android.annotation.CallbackExecutor;
 import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
@@ -37,6 +39,7 @@ import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
+import android.content.AttributionSource;
 import android.content.Context;
 import android.net.ConnectivityManager;
 import android.net.MacAddress;
@@ -67,8 +70,11 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.ref.WeakReference;
 import java.nio.BufferOverflowException;
+import java.nio.ByteOrder;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
@@ -588,7 +594,7 @@ public class WifiAwareManager {
                 Bundle extras = new Bundle();
                 if (SdkLevel.isAtLeastS()) {
                     extras.putParcelable(WifiManager.EXTRA_PARAM_KEY_ATTRIBUTION_SOURCE,
-                            mContext.getAttributionSource());
+                            getAttributionSourceInternal());
                 }
                 mService.connect(binder, mContext.getOpPackageName(), mContext.getAttributionTag(),
                         new WifiAwareEventCallbackProxy(this, localExecutor, binder,
@@ -598,6 +604,13 @@ public class WifiAwareManager {
                 throw e.rethrowFromSystemServer();
             }
         }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private AttributionSource getAttributionSourceInternal() {
+        return SdkLevel.isAtLeastU()
+                ? mContext.createDeviceContext(Context.DEVICE_ID_DEFAULT).getAttributionSource()
+                : mContext.getAttributionSource();
     }
 
     /** @hide */
@@ -655,7 +668,7 @@ public class WifiAwareManager {
             Bundle extras = new Bundle();
             if (SdkLevel.isAtLeastS()) {
                 extras.putParcelable(WifiManager.EXTRA_PARAM_KEY_ATTRIBUTION_SOURCE,
-                        mContext.getAttributionSource());
+                        getAttributionSourceInternal());
             }
             mService.publish(mContext.getOpPackageName(), mContext.getAttributionTag(), clientId,
                     publishConfig,
@@ -698,7 +711,7 @@ public class WifiAwareManager {
             Bundle extras = new Bundle();
             if (SdkLevel.isAtLeastS()) {
                 extras.putParcelable(WifiManager.EXTRA_PARAM_KEY_ATTRIBUTION_SOURCE,
-                        mContext.getAttributionSource());
+                        getAttributionSourceInternal());
             }
             mService.subscribe(mContext.getOpPackageName(), mContext.getAttributionTag(), clientId,
                     subscribeConfig,
@@ -806,7 +819,7 @@ public class WifiAwareManager {
      * @hide
      */
     public void initiateBootStrappingSetupRequest(int clientId, int sessionId,
-            PeerHandle peerHandle, int method) {
+            PeerHandle peerHandle, int method, @Nullable byte[] ssi) {
         if (peerHandle == null) {
             throw new IllegalArgumentException(
                     "initiateBootStrappingSetupRequest: invalid peerHandle - must be non-null");
@@ -817,7 +830,7 @@ public class WifiAwareManager {
         }
         try {
             mService.initiateBootStrappingSetupRequest(clientId, sessionId, peerHandle.peerId,
-                    method);
+                    method, ssi);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1222,10 +1235,11 @@ public class WifiAwareManager {
             }
         }
         @Override
-        public void onBootstrappingVerificationConfirmed(int peerId, boolean accept, int method) {
+        public void onBootstrappingVerificationConfirmed(int peerId, boolean accept, int method,
+                byte[] serviceSpecificInfo) {
             if (accept) {
                 mHandler.post(() -> mOriginalCallback.onBootstrappingSucceeded(
-                        new PeerHandle(peerId), method));
+                        new PeerHandle(peerId), method, serviceSpecificInfo));
             } else {
                 mHandler.post(() -> mOriginalCallback.onBootstrappingFailed(
                         new PeerHandle(peerId)));
@@ -1235,6 +1249,30 @@ public class WifiAwareManager {
         @Override
         public void onRangingResultsReceived(List<RangingResult> rangingResults) {
             mHandler.post(() -> mOriginalCallback.onRangingResultsReceived(rangingResults));
+        }
+
+        @Override
+        public void onDatapathConnected(int peerId, WifiAwareNetworkInfo info)
+                throws RemoteException {
+            mHandler.post(
+                    () -> mOriginalCallback.onDataPathConnected(new PeerHandle(peerId), info));
+        }
+
+        @Override
+        public void onDataPathRequestFailure(int peerId, int reason) throws RemoteException {
+            mHandler.post(() ->
+                    mOriginalCallback.onDataPathRequestFailed(new PeerHandle(peerId), reason));
+        }
+
+        @Override
+        public void onDataPathDisconnected(int peerId) throws RemoteException {
+            mHandler.post(() -> mOriginalCallback.onDataPathDisconnected(new PeerHandle(peerId)));
+        }
+
+        @Override
+        public void onDataPathRequestReceived(int peerId) {
+            mHandler.post(() -> mOriginalCallback
+                    .onDataPathRequestReceived(new PeerHandle(peerId)));
         }
 
         /*
@@ -1419,6 +1457,42 @@ public class WifiAwareManager {
             throw e.rethrowFromSystemServer();
         }
     }
+
+    /**
+     * @hide
+     */
+    public void requestDataPath(int clientId, int sessionId, PeerHandle peerHandle,
+            AwareDataPathRequest request) {
+        try {
+            mService.requestDataPath(clientId, sessionId, peerHandle.peerId, request);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     */
+    public void respondToDataPath(int clientId, int sessionId, PeerHandle peerHandle,
+            AwareDataPathRequest request, boolean accept) {
+        try {
+            mService.respondToDataPath(clientId, sessionId, peerHandle.peerId, request, accept);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     */
+    public void releaseDataPath(int clientId, int sessionId, PeerHandle peerHandle) {
+        try {
+            mService.releaseDataPath(clientId, sessionId, peerHandle.peerId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+
+    }
     /**
      * Attach to the Wi-Fi Aware service as an offload session. All discovery sessions and
      * connections will be handled via out-of-band connections.
@@ -1442,4 +1516,64 @@ public class WifiAwareManager {
         attach(null, null, attachCallback, null, true, executor);
     }
 
+    /**
+     * Create the TLV buffer containing the TXT record as per the Wi-Fi Aware specifications 4.0
+     * Table 150.
+     *
+     * @param txtRecord txtMap TXT record with key/value pair in a map confirming to format defined
+     *                  at http://files.dns-sd.org/draft-cheshire-dnsext-dns-sd.txt.
+     * @return The TLV buffer containing the TXT record.
+     */
+    @FlaggedApi(FLAG_SEND_SERVICE_SPECIFIC_INFO_IN_BOOTSTRAPPING_REQUEST)
+    public @NonNull static byte[] createTxtRecordTlvBuffer(@NonNull Map<String, String> txtRecord) {
+        Objects.requireNonNull(txtRecord, "txtRecord cannot be null");
+        TlvBufferUtils.TlvConstructor txt = new TlvBufferUtils.TlvConstructor(0, 1);
+        txt.allocate(65535); // 65535 is the max size of text info.
+        for (Map.Entry<String, String> entry : txtRecord.entrySet()) {
+            if (entry.getKey().isEmpty() || entry.getValue().isEmpty()) {
+                throw new IllegalArgumentException("TXT record key or value cannot be empty.");
+            }
+                txt.putString(0, entry.getKey() + "=" + entry.getValue());
+        }
+        TlvBufferUtils.TlvConstructor tlvBuffer = new TlvBufferUtils.TlvConstructor(1, 2);
+        tlvBuffer.setByteOrder(ByteOrder.LITTLE_ENDIAN);
+        tlvBuffer.allocate(65538);
+        tlvBuffer.putByteArray(4, txt.getArray());
+
+        return tlvBuffer.getArray();
+    }
+
+    /**
+     * Create the TXT record map from the TLV buffer which generate by
+     * {@link #createTxtRecordTlvBuffer(Map)}
+     *
+     * @param txtRecordTlvBuffer The TLV buffer containing the TXT record.
+     * @return The TXT record map.
+     */
+    @FlaggedApi(FLAG_SEND_SERVICE_SPECIFIC_INFO_IN_BOOTSTRAPPING_REQUEST)
+    public @NonNull static Map<String, String> createTxtRecordMap(
+            @NonNull byte[] txtRecordTlvBuffer) {
+        Objects.requireNonNull(txtRecordTlvBuffer, "txtRecordTlvBuffer cannot be null");
+        if (!TlvBufferUtils.isValidEndian(txtRecordTlvBuffer, 1, 2, ByteOrder.LITTLE_ENDIAN)) {
+            throw new IllegalArgumentException("Invalid txtRecordTlvBuffer provided");
+        }
+        TlvBufferUtils.TlvIterable iter = new TlvBufferUtils.TlvIterable(1, 2, txtRecordTlvBuffer);
+        iter.setByteOrder(ByteOrder.LITTLE_ENDIAN);
+        Map<String, String> txtRecord = new HashMap<>();
+        for (TlvBufferUtils.TlvElement elem : iter) {
+            if (elem.type == 4) {
+                TlvBufferUtils.TlvIterable txtIter = new TlvBufferUtils.TlvIterable(0, 1,
+                        elem.getRawData());
+                for (TlvBufferUtils.TlvElement txtElem : txtIter) {
+                    if (txtElem.type == 0) {
+                        String[] keyValue = new String(txtElem.getRawData()).split("=");
+                        if (keyValue.length == 2) {
+                            txtRecord.put(keyValue[0], keyValue[1]);
+                        }
+                    }
+                }
+            }
+        }
+        return txtRecord;
+    }
 }

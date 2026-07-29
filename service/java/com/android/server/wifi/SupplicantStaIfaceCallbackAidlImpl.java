@@ -84,6 +84,7 @@ import com.android.server.wifi.hotspot2.anqp.Constants;
 import com.android.server.wifi.usd.UsdRequestManager;
 import com.android.server.wifi.util.HalAidlUtil;
 import com.android.server.wifi.util.NativeUtil;
+import com.android.wifi.flags.Flags;
 
 import java.io.IOException;
 import java.nio.BufferUnderflowException;
@@ -97,7 +98,7 @@ import java.util.Map;
 
 class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stub {
     private static final String TAG = "SupplicantStaIfaceCallbackAidlImpl";
-    private final SupplicantStaIfaceHalAidlImpl mStaIfaceHal;
+    private final SupplicantStaIfaceHalAidlBase mStaIfaceHal;
     private final String mIfaceName;
     private final Context mContext;
     private final WifiMonitor mWifiMonitor;
@@ -110,7 +111,7 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
     private String mCurrentSsid = null;
     private final Handler mEventHandler;
 
-    SupplicantStaIfaceCallbackAidlImpl(@NonNull SupplicantStaIfaceHalAidlImpl staIfaceHal,
+    SupplicantStaIfaceCallbackAidlImpl(@NonNull SupplicantStaIfaceHalAidlBase staIfaceHal,
             @NonNull String ifaceName, @NonNull Object lock,
             @NonNull Context context, @NonNull WifiMonitor wifiMonitor,
             @NonNull SsidTranslator ssidTranslator, Handler eventHandler) {
@@ -213,9 +214,11 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
                 mStateBeforeDisconnect = newState;
             }
 
-            if (newState == StaIfaceCallbackState.ASSOCIATING
+            if (newState == StaIfaceCallbackState.AUTHENTICATING
+                    || newState == StaIfaceCallbackState.ASSOCIATING
                     || newState == StaIfaceCallbackState.ASSOCIATED
                     || newState == StaIfaceCallbackState.COMPLETED) {
+                mCurrentSsid = wifiSsid.toString();
                 mStaIfaceHal.updateOnLinkedNetworkRoaming(mIfaceName, id, false);
             }
 
@@ -223,9 +226,6 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
                 mWifiMonitor.broadcastNetworkConnectionEvent(
                         mIfaceName, mStaIfaceHal.getCurrentNetworkId(mIfaceName), filsHlpSent,
                         wifiSsid, bssidStr, keyMgmtMask);
-            } else if (newState == StaIfaceCallbackState.AUTHENTICATING
-                    || newState == StaIfaceCallbackState.ASSOCIATING) {
-                mCurrentSsid = wifiSsid.toString();
             }
             mWifiMonitor.broadcastSupplicantStateChangeEvent(
                     mIfaceName, mStaIfaceHal.getCurrentNetworkId(mIfaceName), wifiSsid,
@@ -781,18 +781,12 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
     @Override
     public void onUsdPublishReplied(UsdServiceDiscoveryInfo info) {
         mEventHandler.post(() -> {
-            if (mStaIfaceHal.getUsdEventsCallback() == null) {
-                Log.e(TAG, "UsdEventsCallback callback is null");
+            if (mStaIfaceHal.getUsdEventsCallback() == null || info == null) {
+                Log.e(TAG, "UsdEventsCallback callback is null or info is null");
                 return;
             }
             UsdRequestManager.UsdHalDiscoveryInfo usdHalDiscoveryInfo =
-                    new UsdRequestManager.UsdHalDiscoveryInfo(info.ownId,
-                            info.peerId,
-                            MacAddress.fromBytes(info.peerMacAddress),
-                            info.serviceSpecificInfo,
-                            info.protoType,
-                            info.isFsd,
-                            info.matchFilter);
+                    halToFrameworkUsdHalDiscoveryInfo(info);
             mStaIfaceHal.getUsdEventsCallback().onUsdPublishReplied(usdHalDiscoveryInfo);
         });
     }
@@ -800,20 +794,56 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
     @Override
     public void onUsdServiceDiscovered(UsdServiceDiscoveryInfo info) {
         mEventHandler.post(() -> {
-            if (mStaIfaceHal.getUsdEventsCallback() == null) {
+            if (mStaIfaceHal.getUsdEventsCallback() == null && info != null) {
                 Log.e(TAG, "UsdEventsCallback callback is null");
                 return;
             }
             UsdRequestManager.UsdHalDiscoveryInfo usdHalDiscoveryInfo =
-                    new UsdRequestManager.UsdHalDiscoveryInfo(info.ownId,
-                            info.peerId,
-                            MacAddress.fromBytes(info.peerMacAddress),
-                            info.serviceSpecificInfo,
-                            info.protoType,
-                            info.isFsd,
-                            info.matchFilter);
+                    halToFrameworkUsdHalDiscoveryInfo(info);
             mStaIfaceHal.getUsdEventsCallback().onUsdServiceDiscovered(usdHalDiscoveryInfo);
         });
+    }
+
+    private UsdRequestManager.UsdHalDiscoveryInfo halToFrameworkUsdHalDiscoveryInfo(
+            UsdServiceDiscoveryInfo info) {
+        UsdRequestManager.UsdHalProximityRangingProtocolInfo protocolInfo = null;
+        UsdRequestManager.UsdHalDeviceIdentityKey peerDevIk = null;
+        if (getInterfaceVersion() >= 5 && Flags.proximityRangingImpl()) {
+            if (info.prInfo != null) {
+                protocolInfo = new UsdRequestManager.UsdHalProximityRangingProtocolInfo(
+                        info.prInfo.deviceName == null ? "" : info.prInfo.deviceName,
+                        info.prInfo.isEdcaBasedRangingSupported,
+                        info.prInfo.isNtbNonSecureLtfRangingSupported,
+                        info.prInfo.isNtbSecureLtfRangingSupported,
+                        info.prInfo.isUnauthenticatedPasnModeSupported,
+                        info.prInfo.isAuthenticatedPasnModeSupported,
+                        info.prInfo.isEdcaBasedIstaRoleSupported,
+                        info.prInfo.isEdcaBasedRstaRoleSupported,
+                        info.prInfo.isNtbIstaRoleSupported,
+                        info.prInfo.isNtbRstaRoleSupported,
+                        info.prInfo.maxSupportedPacketBandwidthEdcaBased,
+                        info.prInfo.maxSupportedPreambleEdcaBased,
+                        info.prInfo.maxSupportedPacketBandwidthNtb,
+                        info.prInfo.maxSupportedPreambleNtb,
+                        info.prInfo.is6GHzSupported
+                );
+            }
+
+            if (info.peerDevIk != null && info.peerDevIk.data != null) {
+                peerDevIk = UsdRequestManager.UsdHalDeviceIdentityKey.tryCreate(
+                    info.peerDevIk.data
+                );
+            }
+        }
+
+        return  new UsdRequestManager.UsdHalDiscoveryInfo(info.ownId,
+                        info.peerId,
+                        MacAddress.fromBytes(info.peerMacAddress),
+                        info.serviceSpecificInfo,
+                        info.protoType,
+                        info.isFsd,
+                        info.matchFilter,
+                        protocolInfo, peerDevIk);
     }
 
     @Override
@@ -1006,6 +1036,9 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
 
     private int halToFrameworkReasonCode(int reason) {
         switch (reason) {
+            // TODO(b/488443465): Define RESERVED = 0 in Supplicant AIDL - StaIfaceReasonCode.aidl
+            case 0:
+                return SupplicantStaIfaceHal.StaIfaceReasonCode.RESERVED;
             case StaIfaceReasonCode.UNSPECIFIED:
                 return SupplicantStaIfaceHal.StaIfaceReasonCode.UNSPECIFIED;
             case StaIfaceReasonCode.PREV_AUTH_NOT_VALID:
@@ -1418,7 +1451,7 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
             if (qosPolicyData != null) {
                 for (QosPolicyData halPolicy : qosPolicyData) {
                     frameworkQosPolicies.add(
-                            SupplicantStaIfaceHalAidlImpl.halToFrameworkQosPolicy(halPolicy));
+                            SupplicantStaIfaceHalAidlBase.halToFrameworkQosPolicy(halPolicy));
                 }
             }
             mWifiMonitor.broadcastQosPolicyRequestEvent(mIfaceName, qosPolicyRequestId,

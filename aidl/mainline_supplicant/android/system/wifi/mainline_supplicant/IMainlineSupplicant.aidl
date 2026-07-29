@@ -17,6 +17,7 @@
 package android.system.wifi.mainline_supplicant;
 
 import android.hardware.wifi.supplicant.ISupplicant;
+import android.system.wifi.mainline_supplicant.ISupplicantNanIface;
 
 /**
  * Root of the mainline supplicant interface. This is an unstable AIDL interface used
@@ -32,4 +33,40 @@ interface IMainlineSupplicant {
      *         |SupplicantStatusCode.FAILURE_UNKNOWN|
      */
     @PropagateAllowBlocking ISupplicant getVendorSupplicant();
+
+    /**
+     * Registers a wireless NANinterface in supplicant.
+     *
+     * @param ifaceName Name of the interface (e.g aware0).
+     * @return AIDL interface object representing the interface if
+     *         successful, null otherwise.
+     * @throws ServiceSpecificException with one of the following values:
+     *         |SupplicantStatusCode.FAILURE_ARGS_INVALID|,
+     *         |SupplicantStatusCode.FAILURE_UNKNOWN|,
+     *         |SupplicantStatusCode.FAILURE_IFACE_EXISTS|
+     */
+    @PropagateAllowBlocking ISupplicantNanIface addNanInterface(in String ifaceName);
+
+    /**
+     * Removes a wireless NAN interface from supplicant.
+     *
+     * @param ifaceName Name of the interface (e.g aware0).
+     * @throws ServiceSpecificException with one of the following values:
+     *         |SupplicantStatusCode.FAILURE_ARGS_INVALID|,
+     *         |SupplicantStatusCode.FAILURE_UNKNOWN|,
+     *         |SupplicantStatusCode.FAILURE_IFACE_DOES_NOT_EXIST|
+     */
+    void removeNanInterface(in String ifaceName);
+
+    /**
+     * Set the current user's identity for loading per supplicant configuration file
+     * from user's storage.
+     *
+     * @param userId the identity of the current foreground user which the user credential
+     *               encrypted (CE) storage has unlocked in the device. It can be observed from
+     *。             ActivityManager#getCurrentUser.
+     * @throws ServiceSpecificException with one of the following values:
+     *         |SupplicantStatusCode.FAILURE_UNKNOWN|
+     */
+    void setCurrentUserIdentity(in int userId);
 }

@@ -106,7 +106,7 @@
   </string-array>
     <string name="wifi_eap_error_message_code_32761" msgid="3962610712123291591">"<xliff:g id="SSID">%1$s</xliff:g> : Gabimi i vërtetimit të EAP 32761"</string>
   <string-array name="wifi_eap_error_message_code_32761_carrier_overrides">
-    <item msgid="5173744897521799785">"<xliff:g id="CARRIER_ID_PREFIX">:::1839:::</xliff:g><xliff:g id="SSID">%1$s</xliff:g>: Nuk je abonuar në Verizon Wi-Fi Access. Na telefono në 800-922-0204. (Gabimi = 32761)"</item>
+    <item msgid="5173744897521799785">"<xliff:g id="CARRIER_ID_PREFIX">:::1839:::</xliff:g><xliff:g id="SSID">%1$s</xliff:g>: Nuk je i abonuar në Verizon Wi-Fi Access. Na telefono në 800-922-0204. (Gabimi = 32761)"</item>
   </string-array>
     <string name="wifi_eap_error_message_code_32762" msgid="2381670648753465737">"<xliff:g id="SSID">%1$s</xliff:g> : Gabimi i vërtetimit të EAP 32762"</string>
   <string-array name="wifi_eap_error_message_code_32762_carrier_overrides">
@@ -114,7 +114,7 @@
   </string-array>
     <string name="wifi_eap_error_message_code_32763" msgid="4467733260757049969">"<xliff:g id="SSID">%1$s</xliff:g> : Gabimi i vërtetimit të EAP 32763"</string>
   <string-array name="wifi_eap_error_message_code_32763_carrier_overrides">
-    <item msgid="591026649262091217">"<xliff:g id="CARRIER_ID_PREFIX">:::1839:::</xliff:g><xliff:g id="SSID">%1$s</xliff:g>: Je lidhur tashmë me Verizon Wi-Fi Access. (Gabimi = 32763)"</item>
+    <item msgid="591026649262091217">"<xliff:g id="CARRIER_ID_PREFIX">:::1839:::</xliff:g><xliff:g id="SSID">%1$s</xliff:g>: Je i lidhur tashmë me Verizon Wi-Fi Access. (Gabimi = 32763)"</item>
   </string-array>
     <string name="wifi_eap_error_message_code_32764" msgid="7349538467012877101">"<xliff:g id="SSID">%1$s</xliff:g> : Gabimi i vërtetimit të EAP 32764"</string>
   <string-array name="wifi_eap_error_message_code_32764_carrier_overrides">
@@ -218,4 +218,11 @@
     <string name="wifi_network_switch_dialog_title_bad_internet" msgid="6013385270249705547">"<xliff:g id="SSID_0">%1$s</xliff:g> është me cilësi të ulët. Të kalohet në <xliff:g id="SSID_1">%2$s</xliff:g>?"</string>
     <string name="wifi_network_switch_dialog_positive_button" msgid="7845507995422722454">"Kalo"</string>
     <string name="wifi_network_switch_dialog_negative_button" msgid="1496665895689498806">"Mos kalo"</string>
+    <string name="wifi_disconnect_dialog_title" msgid="7541989406466882747">"Të shkëputet nga <xliff:g id="APP_NAME">%1$s</xliff:g>?"</string>
+    <string name="wifi_disconnect_dialog_message" msgid="5116841532118842227">"Shkëputja nga ky rrjet do të shkëputë <xliff:g id="APP_NAME">%1$s</xliff:g>."</string>
+    <string name="wifi_disconnect_dialog_positive_button" msgid="1193888906224230855">"Shkëput"</string>
+    <string name="wifi_disconnect_dialog_negative_button" msgid="5075682597077355859">"Anulo"</string>
+    <string name="wifi_disconnect_dialog_new_connection_title" msgid="6276398076311281426">"Të lidhet me një rrjet tjetër Wi‑Fi?"</string>
+    <string name="wifi_disconnect_dialog_new_connection_message" msgid="2830348590173029295">"Lidhja me <xliff:g id="SSID">%2$s</xliff:g> do të shkëputë <xliff:g id="APP_NAME">%1$s</xliff:g>."</string>
+    <string name="wifi_disconnect_dialog_new_connection_positive_button" msgid="4891994857934666730">"Lidh"</string>
 </resources>

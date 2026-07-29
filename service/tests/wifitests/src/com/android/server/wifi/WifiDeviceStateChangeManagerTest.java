@@ -191,7 +191,6 @@ public class WifiDeviceStateChangeManagerTest extends WifiBaseTest {
         mIsAapmApiFlagEnabled = true;
         ArgumentCaptor<AdvancedProtectionManager.Callback> apmCallbackCaptor =
                 ArgumentCaptor.forClass(AdvancedProtectionManager.Callback.class);
-        when(mFeatureFlags.wepDisabledInApm()).thenReturn(true);
         AdvancedProtectionManager mockAdvancedProtectionManager =
                 mock(AdvancedProtectionManager.class);
         when(mContext.getSystemService(AdvancedProtectionManager.class))
@@ -221,12 +220,13 @@ public class WifiDeviceStateChangeManagerTest extends WifiBaseTest {
 
     @Test
     public void testUsingRegisterReceiverForAllUsersWhenFlagEnabled() throws Exception {
+        assumeTrue(Environment.isSdkAtLeastC());
         when(mFeatureFlags.monitorIntentForAllUsers()).thenReturn(true);
         mWifiDeviceStateChangeManager.handleBootCompleted();
         verify(mContext).registerReceiverForAllUsers(any(BroadcastReceiver.class),
                 argThat(filter -> filter.hasAction(Intent.ACTION_SCREEN_ON)
                         && filter.hasAction(Intent.ACTION_SCREEN_OFF)),
-                eq(null), any(Handler.class));
+                eq(null), eq(null));
         verify(mContext, never()).registerReceiver(any(), any());
     }
 }

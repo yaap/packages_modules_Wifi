@@ -114,7 +114,7 @@
   </string-array>
     <string name="wifi_eap_error_message_code_32763" msgid="4467733260757049969">"<xliff:g id="SSID">%1$s</xliff:g> : chyba overenia EAP 32763"</string>
   <string-array name="wifi_eap_error_message_code_32763_carrier_overrides">
-    <item msgid="591026649262091217">"<xliff:g id="CARRIER_ID_PREFIX">:::1839:::</xliff:g><xliff:g id="SSID">%1$s</xliff:g> : k službe Verizon Wi-Fi Access ste sa už pripojili. (Chyba = 32763)"</item>
+    <item msgid="591026649262091217">"<xliff:g id="CARRIER_ID_PREFIX">:::1839:::</xliff:g><xliff:g id="SSID">%1$s</xliff:g> : k službe Verizon Wi‑Fi Access ste sa už pripojili. (Chyba = 32763)"</item>
   </string-array>
     <string name="wifi_eap_error_message_code_32764" msgid="7349538467012877101">"<xliff:g id="SSID">%1$s</xliff:g> : chyba overenia EAP 32764"</string>
   <string-array name="wifi_eap_error_message_code_32764_carrier_overrides">
@@ -218,4 +218,11 @@
     <string name="wifi_network_switch_dialog_title_bad_internet" msgid="6013385270249705547">"<xliff:g id="SSID_0">%1$s</xliff:g> má nízku kvalitu. Chcete prepnúť na <xliff:g id="SSID_1">%2$s</xliff:g>?"</string>
     <string name="wifi_network_switch_dialog_positive_button" msgid="7845507995422722454">"Prepnúť"</string>
     <string name="wifi_network_switch_dialog_negative_button" msgid="1496665895689498806">"Neprepnúť"</string>
+    <string name="wifi_disconnect_dialog_title" msgid="7541989406466882747">"Chcete sa odpojiť od siete <xliff:g id="APP_NAME">%1$s</xliff:g>?"</string>
+    <string name="wifi_disconnect_dialog_message" msgid="5116841532118842227">"Odpojením od tejto siete sa odpojí sieť <xliff:g id="APP_NAME">%1$s</xliff:g>."</string>
+    <string name="wifi_disconnect_dialog_positive_button" msgid="1193888906224230855">"Odpojiť"</string>
+    <string name="wifi_disconnect_dialog_negative_button" msgid="5075682597077355859">"Zrušiť"</string>
+    <string name="wifi_disconnect_dialog_new_connection_title" msgid="6276398076311281426">"Chcete sa pripojiť k inej sieti Wi‑Fi?"</string>
+    <string name="wifi_disconnect_dialog_new_connection_message" msgid="2830348590173029295">"Pripojením k sieti <xliff:g id="SSID">%2$s</xliff:g> sa odpojí sieť <xliff:g id="APP_NAME">%1$s</xliff:g>."</string>
+    <string name="wifi_disconnect_dialog_new_connection_positive_button" msgid="4891994857934666730">"Pripojiť"</string>
 </resources>

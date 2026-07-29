@@ -60,13 +60,14 @@ public final class WifiAwareService extends SystemService {
             FeatureFlags featureFlags = wifiInjector.getDeviceConfigFacade().getFeatureFlags();
 
             WifiAwareStateManager wifiAwareStateManager = new WifiAwareStateManager(wifiInjector,
-                    new PairingConfigManager());
+                    wifiInjector.getPairingConfigManager());
             WifiAwareNativeCallback wifiAwareNativeCallback = new WifiAwareNativeCallback(
                     wifiAwareStateManager);
             WifiAwareNativeManager wifiAwareNativeManager = new WifiAwareNativeManager(
                     wifiAwareStateManager, halDeviceManager, wifiAwareNativeCallback,
-                    wifiNative, featureFlags);
-            WifiAwareNativeApi wifiAwareNativeApi = new WifiAwareNativeApi(wifiAwareNativeManager);
+                    wifiNative, featureFlags, wifiInjector);
+            WifiAwareNativeApi wifiAwareNativeApi = new WifiAwareNativeApi(wifiAwareNativeManager,
+                    wifiInjector.getContext());
             wifiAwareStateManager.setNative(wifiAwareNativeManager, wifiAwareNativeApi);
             WifiAwareShellCommand wifiAwareShellCommand = new WifiAwareShellCommand();
             wifiAwareShellCommand.register("native_api", wifiAwareNativeApi);
@@ -84,5 +85,20 @@ public final class WifiAwareService extends SystemService {
         } else if (phase == SystemService.PHASE_BOOT_COMPLETED) {
             mImpl.startLate();
         }
+    }
+
+    @Override
+    public void onUserSwitching(TargetUser from, TargetUser to) {
+        mImpl.handleUserSwitch(to.getUserHandle().getIdentifier());
+    }
+
+    @Override
+    public void onUserUnlocking(TargetUser user) {
+        mImpl.handleUserUnlock(user.getUserHandle().getIdentifier());
+    }
+
+    @Override
+    public void onUserStopping(TargetUser user) {
+        mImpl.handleUserStop(user.getUserHandle().getIdentifier());
     }
 }

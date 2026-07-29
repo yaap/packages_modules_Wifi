@@ -72,17 +72,6 @@ flag {
 }
 
 flag {
-    name: "voip_detection_bugfix"
-    namespace: "wifi"
-    description: "Detect VoIP over Wifi and execute optimization"
-    bug: "295885471"
-    is_fixed_read_only: true
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
     name: "get_bssid_blocklist_api"
     is_exported: true
     namespace: "wifi"
@@ -137,17 +126,6 @@ flag {
     description: "Wi-Fi Alliance RSN Overriding feature"
     bug: "348669010"
     is_fixed_read_only: true
-}
-
-flag {
-    name: "new_uri_parsing_for_escape_character"
-    namespace: "wifi"
-    description: "New parsing logic for Zxing uri format which support escape character"
-    bug: "342706482"
-    is_fixed_read_only: true
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
 }
 
 flag {
@@ -293,20 +271,6 @@ flag {
 }
 
 flag {
-    name: "wifi_lock_activated_by_p2p_or_aware"
-    namespace: "wifi"
-    description: "Allow some apps to activate a WifiLock if a P2P or Aware connection is active"
-    bug: "404950833"
-}
-
-flag {
-    name: "updated_tofu_dialog"
-    namespace: "wifi"
-    description: "Update the TOFU dialog with more information"
-    bug: "276778134"
-}
-
-flag {
     name: "un_deprecated_wificonfiguration"
     is_exported: true
     namespace: "wifi"
@@ -412,24 +376,10 @@ flag {
 }
 
 flag {
-    name: "scan_optimization_with_mobility_change"
-    namespace: "wifi"
-    description: "Add new callback API to listen on restrict autojoin to subscription ID state"
-    bug: "422594154"
-}
-
-flag {
     name: "nl80211_proxy_enabled"
     namespace: "wifi"
     description: "Allow the Nl80211 proxy to be initialized"
     bug: "344891670"
-}
-
-flag {
-    name: "filter_carrier_networks_while_in_motion"
-    namespace: "wifi"
-    description: "Filters carrier networks from the connection candidate list while the device is in motion"
-    bug: "409851656"
 }
 
 flag {
@@ -441,8 +391,163 @@ flag {
 }
 
 flag {
-    name: "ml_scorer_in_wifi_fw"
+    name: "aware_ingress_egress_distance"
+    is_exported: true
     namespace: "wifi"
-    description: "Add ML scorer into Wi-Fi framework"
-    bug: "412641160"
+    description: "Add new API to set/get ingress and egress distances"
+    bug: "399423727"
+}
+
+flag {
+    name: "local_only_disconnect_reason"
+    is_exported: true
+    namespace: "wifi"
+    description: "Add new API to get local-only connection disconnect reason"
+    bug: "440270888"
+}
+
+flag {
+    name: "aware_periodic_ranging_intervals"
+    is_exported: true
+    namespace: "wifi"
+    description: "Add new API to get supported periodic ranging intervals"
+    bug: "391159870"
+}
+
+
+
+flag {
+    name: "send_service_specific_info_in_bootstrapping_request"
+    is_exported: true
+    namespace: "wifi"
+    description: "Add new API to send a service specific info in bootstrapping request"
+    bug: "440620121"
+}
+
+flag {
+    name: "set_pairing_discovery_channel_frequency"
+    is_exported: true
+    namespace: "wifi"
+    description: "Add new API to set discovery channel for pairing"
+    bug: "438011300"
+}
+
+flag {
+    name: "wifi_aware_supplicant_solution"
+    namespace: "wifi"
+    description: "Use the supplicant solution for wifi aware"
+    bug: "448421897"
+}
+
+flag {
+    name: "rtt_busy_try_later_api"
+    is_exported: true
+    namespace: "wifi"
+    description: "Adds a new RTT status code for when the peer is busy and a method to get the retry duration."
+    bug: "407453160"
+}
+
+flag {
+    name: "last_caller_26q2"
+    is_exported: true
+    namespace: "wifi"
+    description: "Add new reason codes for last caller tracking"
+    bug: "448479152"
+}
+
+flag {
+    name: "wificond_to_nl80211_migration"
+    namespace: "wifi"
+    description: "Migrate wificond functionality to direct nl80211 commands"
+    bug: "394409845"
+}
+
+flag {
+    name: "wifi_p2p_connection_info"
+    is_exported: true
+    namespace: "wifi"
+    description: "Add new API to get connection capabilities of current P2P connection"
+    bug: "345584464"
+}
+
+flag {
+    name: "proximity_ranging"
+    is_exported: true
+    namespace: "wifi"
+    description: "Wi-Fi Alliance Proximity Detection(Ranging) (PD) feature"
+    bug: "445727208"
+}
+
+flag {
+    name: "proximity_ranging_impl"
+    namespace: "wifi"
+    description: "Proximity Detection(Ranging) (PD) feature framework implementation"
+    bug: "465464585"
+}
+
+flag {
+    name: "feed_more_data_to_external_scorer"
+    is_exported: true
+    namespace: "wifi"
+    description: "Feed the L2/L3 data stall and pre-evaluation data to external scorer for reference"
+    bug: "446298612"
+}
+
+flag {
+    name: "mlo_link_speed_api"
+    is_exported: true
+    namespace: "wifi"
+    description: "API to get max supported Tx/Rx link speed for MLO links"
+    bug: "385329999"
+}
+
+flag {
+    name: "upgrade_single_6ghz_hotspot_to_dual_band"
+    namespace: "wifi"
+    description: "Add option to temporarily upgrade single 6ghz hotspot config to dual band if available"
+    bug: "394409845"
+}
+
+flag {
+    name: "multi_peer_aware_datapath"
+    namespace: "wifi"
+    is_exported: true
+    description: "new API to allow App create as many datapath as the NDP number from capability"
+    bug: "454343159"
+}
+
+flag {
+    name: "power_stats_api"
+    namespace: "wifi"
+    description: "API to get power statistics for each wifi core/radio"
+    bug: "444936941"
+}
+
+flag {
+    name: "allow_d2d_without_sta_on_xr"
+    is_exported: false
+    namespace: "wifi"
+    description: "Enables Standalone D2D on XR devices, even when STA+D2D concurrency is supported"
+    bug: "486996062"
+}
+
+flag {
+    name: "disable_insecure_wifi_autojoin_when_aapm_on"
+    namespace: "wifi"
+    description: "Android Advanced Protection Mode Feature: Disable Insecure Wifi Autojoin"
+    bug: "489845821"
+}
+
+flag {
+    name: "softap_traffic_monitor"
+    namespace: "wifi"
+    description: "Monitoring softap traffic stats and shut it down when there is no active packets "
+    bug: "475658391"
+}
+
+flag {
+    name: "handle_l2_data_stall_in_ml_scorer"
+    namespace: "wifi"
+    description: "Handle L2 data stall in ML scorer"
+    bug: "458195756"
 }

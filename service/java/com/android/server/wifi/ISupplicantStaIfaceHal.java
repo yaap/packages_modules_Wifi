@@ -27,8 +27,10 @@ import android.net.wifi.WifiConfiguration;
 import android.net.wifi.usd.PublishConfig;
 import android.net.wifi.usd.SubscribeConfig;
 
+import com.android.server.wifi.rtt.SupplicantWifiRttController;
 import com.android.server.wifi.usd.UsdRequestManager;
 
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.List;
@@ -860,6 +862,16 @@ interface ISupplicantStaIfaceHal {
     default void disableMscs(String ifaceName) {}
 
     /**
+     * Creates a SupplicantWifiRttController for the given interface name.
+     *
+     * @param ifaceName The name of the interface.
+     * @return A new SupplicantWifiRttController instance.
+     */
+    default SupplicantWifiRttController createRttController(@NonNull String ifaceName) {
+        return null;
+    }
+
+    /**
      * Returns true if this device supports RSN Overriding, false otherwise.
      */
     default boolean isRsnOverridingSupported(@NonNull String ifaceName) {
@@ -950,4 +962,11 @@ interface ISupplicantStaIfaceHal {
             byte[] message) {
         return false;
     }
+
+    /**
+     * Dump information about the internal state
+     *
+     * @param pw PrintWriter to write the dump to
+     */
+    void dump(PrintWriter pw);
 }

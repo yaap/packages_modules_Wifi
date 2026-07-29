@@ -49,6 +49,9 @@ import androidx.test.uiautomator.UiDevice;
 import androidx.test.uiautomator.UiObject2;
 import androidx.test.uiautomator.Until;
 
+import com.android.compatibility.common.util.FeatureUtil;
+import com.android.compatibility.common.util.UiAutomatorUtils2;
+
 import com.google.android.mobly.snippet.Snippet;
 import com.google.android.mobly.snippet.event.EventCache;
 import com.google.android.mobly.snippet.event.SnippetEvent;
@@ -72,7 +75,6 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
-
 
 /** Snippet class for WifiP2pManager. */
 public class WifiP2pManagerSnippet implements Snippet {
@@ -110,7 +112,6 @@ public class WifiP2pManagerSnippet implements Snippet {
     private int mChannelCnt = -1;
 
     private final Map<Integer, WifiP2pServiceRequest> mServiceRequests;
-
 
     private static class WifiP2pManagerException extends Exception {
         WifiP2pManagerException(String message) {
@@ -165,8 +166,11 @@ public class WifiP2pManagerSnippet implements Snippet {
         // Initialize the first channel. This channel will be used by default if an Wi-Fi P2P RPC
         // method is called without a channel ID.
         mStateChangedReceiver = new WifiP2pStateChangedReceiver(callbackId);
-        mContext.registerReceiver(mStateChangedReceiver, mIntentFilter,
-                Context.RECEIVER_NOT_EXPORTED);
+        int flag = Context.RECEIVER_NOT_EXPORTED;
+        if (Build.VERSION.SDK_INT == 33) {
+            flag = Context.RECEIVER_EXPORTED;
+        }
+        mContext.registerReceiver(mStateChangedReceiver, mIntentFilter, flag);
         WifiP2pManager.Channel channel =
                 mP2pManager.initialize(mContext, mContext.getMainLooper(), null);
         mChannelCnt += 1;
@@ -329,6 +333,55 @@ public class WifiP2pManagerSnippet implements Snippet {
     }
 
     /**
+     * Initiates an asynchronous Wi-Fi P2P connection to a device with the specified configuration.
+     *
+     * <p>This method starts the connection process, which runs in the background. The actual
+     * result of the connection attempt (success or failure) will be delivered later via the
+     * {@link ActionListener} callbacks (onSuccess or onFailure).
+     *
+     * <p><b>Note:</b> The long value returned is NOT the connection duration. It is the system
+     * timestamp captured immediately after the asynchronous {@link WifiP2pManager#connect}
+     * call was made. To measure the actual connection time, one would need to calculate the
+     * difference between the time *before* this call and the time when the
+     * {@link ActionListener#onSuccess} callback is received.
+     *
+     * @param wifiP2pConfig A JSON object containing the Wi-Fi P2P connection configuration.
+     * @param channelId The ID of the channel for Wi-Fi P2P operations, defaults to 0.
+     * @return The current system time in milliseconds, captured just after the connection
+     *         request was dispatched to the Android framework.
+     *         Returns -1 if the channel is not initialized.
+     * @throws Throwable if channel retrieval fails or JSON deserialization issues occur.
+     */
+    @Rpc(description = "Starts an asynchronous p2p connection"
+            + " and returns the initiation timestamp.")
+    public long startWifiP2pConnectTime(JSONObject wifiP2pConfig,
+            @RpcDefault(value = "0") Integer channelId) throws Throwable {
+        WifiP2pManager.Channel channel = getChannel(channelId); // Assuming getChannel() exists
+        if (channel == null) {
+            Log.e(TAG + "P2P Channel is not initialized. Cannot connect.");
+            return -1;
+        }
+
+        // Prepare the connection config and the action listener.
+        String actionListenerCallbackId = UUID.randomUUID().toString();
+        ActionListener actionListener = new ActionListener(actionListenerCallbackId);
+        WifiP2pConfig config = JsonDeserializer.jsonToWifiP2pConfig(wifiP2pConfig);
+        Log.d(TAG + "Attempting to connect to P2P group with config: " + config);
+
+        // Initiate the asynchronous connection.
+        // The result will be reported to actionListener's callbacks.
+        mP2pManager.connect(channel, config, actionListener);
+        Log.d(TAG + "p2pManager.connect() request was dispatched asynchronously.");
+
+        // Capture the time immediately after dispatching the connect request.
+        // This timestamp indicates when the connection process was started,
+        // NOT when it was successfully established.
+        long initiationTime = System.currentTimeMillis();
+        Log.d(TAG + "Connection initiation dispatched at: " + initiationTime + " ms.");
+        return initiationTime;
+    }
+
+    /**
      * Accept p2p connection invitation through clicking on UI.
      *
      * @param deviceName The name of the device to connect.
@@ -347,7 +400,7 @@ public class WifiP2pManagerSnippet implements Snippet {
             throw new WifiP2pManagerException(
                     "The connect invitation is not triggered by expected peer device.");
         }
-        Pattern pattern = Pattern.compile("(ACCEPT|OK|Accept|Connect)");
+        Pattern pattern = Pattern.compile("(ACCEPT|OK|Accept|Connect)", Pattern.CASE_INSENSITIVE);
         if (!mUiDevice.wait(Until.hasObject(By.text(pattern).clazz(Button.class)),
                 UI_ACTION_SHORT_TIMEOUT_MS)) {
             throw new WifiP2pManagerException("Accept button did not occur within timeout.");
@@ -381,7 +434,7 @@ public class WifiP2pManagerSnippet implements Snippet {
         }
 
         // Click 'OK' to close the PIN code alert
-        UiObject2 okButton = mUiDevice.findObject(By.text("OK").clazz(Button.class));
+        UiObject2 okButton = UiAutomatorUtils2.waitFindObject(By.text("OK").clazz(Button.class));
         if (okButton == null) {
             throw new WifiP2pManagerException(
                     "OK button not found in the p2p connection invitation pop-up window.");
@@ -490,6 +543,11 @@ public class WifiP2pManagerSnippet implements Snippet {
         if (mUiDevice.wait(Until.hasObject(By.res(resPattern)), UI_ACTION_LONG_TIMEOUT_MS)) {
             UiObject2 pinEntryField = mUiDevice.findObject(By.res(resPattern));
             pinEntryField.setText(pinCode);
+            if (FeatureUtil.isWatch()) {
+                // Dismiss number input dialog on Watch and wait for things to settle
+                mUiDevice.pressEnter();
+                mUiDevice.waitForIdle();
+            }
             Log.d("Entered PIN code: " + pinCode);
             return;
         }
@@ -930,6 +988,7 @@ public class WifiP2pManagerSnippet implements Snippet {
                     } else {
                         event.getData().putBoolean("isConnected", false);
                     }
+                    event.getData().putLong("timestampMs", System.currentTimeMillis());
                     event.getData().putBundle(
                             EVENT_KEY_P2P_INFO, BundleUtils.fromWifiP2pInfo(p2pInfo));
                     event.getData().putBundle(
@@ -942,9 +1001,7 @@ public class WifiP2pManagerSnippet implements Snippet {
 
     private static class ActionListener implements WifiP2pManager.ActionListener {
         public static final String CALLBACK_EVENT_NAME = "WifiP2pManagerActionListenerCallback";
-
         private final String mCallbackId;
-
         ActionListener(String callbackId) {
             this.mCallbackId = callbackId;
         }

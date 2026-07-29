@@ -195,6 +195,19 @@
     <!-- boolean indicating whether or not to disable shutdown idle instance timer in the bridged mode when connected to a power source -->
     <bool translatable="false" name ="config_wifiFrameworkSoftApDisableBridgedModeShutdownIdleInstanceWhenCharging">false</bool>
 
+    <!-- Integer indicating the idle interval in milliseconds for checking SoftAP traffic status.
+         The default value is 0 (disabled). The mechanism will be enabled when this overlay
+         configuration is set to a non-zero value. The minimal value is required to be larger than 9999 (i.e. at least 10 seconds)
+         to avoid impacting the system. -->
+    <integer translatable="false" name="config_wifiFrameworkSoftApTrafficStatusIdleIntervalMilliseconds">0</integer>
+
+    <!-- Integer indicating the maximum number of packets (Tx + Rx) within the polling interval
+         to be considered as idle traffic. This threshold is used only when
+         config_wifiFrameworkSoftApTrafficStatusPollingIntervalMilliseconds is configured to a non-zero value.
+         For example, if this is set to 5, any packet count (Tx + Rx) greater than 5 within the polling
+         interval will be considered an active session. -->
+    <integer translatable="false" name="config_wifiFrameworkSoftApIdleTrafficThresholdPackets">0</integer>
+
     <!-- Integer indicating maximum hardware supported client number of soft ap -->
     <integer translatable="false" name="config_wifiHardwareSoftapMaxClientCount">16</integer>
 
@@ -220,6 +233,10 @@
          2.4 + 5GHz Bridged if it is currently available and the usable configured bands only
          contain 2.4 or 5Ghz.-->
     <bool translatable="false" name ="config_wifiSoftapUpgradeTetheredTo2g5gBridgedIfBandsAreSubset">false</bool>
+
+    <!-- boolean indicating whether or not to temporarily auto-upgrade tethering softap configured
+         with 6Ghz-single band to 2.4 + 6GHz Bridged if available. -->
+    <bool translatable="false" name ="config_wifiSoftapUpgradeTetheredTo2g6gBridgedIfBandIs6g">false</bool>
 
     <!-- List of allowed channels in 2GHz band for softap. If the device doesn't want to restrict
          channels this should be empty. Values is a comma separated channel string and/or channel
@@ -588,6 +605,11 @@
          in seconds when device is connected and screen is on -->
     <integer translatable="false" name="config_wifiConnectedHighRssiScanMinimumWindowSizeSec"> 600 </integer>
 
+    <!-- For networks that have successfully connected before, require more wrong password failures
+    to happen before permanently disabling it due to wrong password. This overlay configures that
+    threshold.-->
+    <integer translatable="false" name="config_wifiPreviouslyConnectedNetworkWrongPasswordThreshold"> 3 </integer>
+
     <!-- List of constants to indicate how many failures are needed to temporarily disable a network
     from auto-connect -->
     <integer translatable="false" name="config_wifiDisableReasonAssociationRejectionThreshold"> 3 </integer>
@@ -870,6 +892,10 @@
     <!-- Enable concurrent internet connectivity + internet connectivity
          Note: this is conditional on the device supporting dual concurrent STAs. -->
     <bool translatable="false" name="config_wifiMultiStaMultiInternetConcurrencyEnabled">false</bool>
+    <!-- Indicates that the device supports multi internet connection to same band -->
+    <bool translatable="false" name="config_wifiMultiInternetSameBandConnectionAllowed">false</bool>
+    <!-- Indicates that the device supports multi internet connection to same bssid -->
+    <bool translatable="false" name="config_wifiMultiInternetSameBssidConnectionAllowed">false</bool>
     <!-- Enable the default coex channel avoidance algorithm and disable the functionality of
          WifiManager#setCoexUnsafeChannels. -->
     <bool translatable="false" name="config_wifiDefaultCoexAlgorithmEnabled">false</bool>
@@ -1270,11 +1296,6 @@
          configured, the default range is 192.168.49.128 to 192.168.49.254 -->
     <string translatable="false" name="config_wifiP2pGoEapolIpAddressRangeStart"/>
     <string translatable="false" name="config_wifiP2pGoEapolIpAddressRangeEnd"/>
-    <!-- Boolean indicating whether to disable firmware roaming when the device goes into idle mode.
-         true: firmware roaming will be disabled when the device goes into idle mode and screen
-               is off, and then re-activated when the device exits idle mode or screen is on.
-         false: firmware roaming will not be affected. -->
-    <bool translatable="false" name ="config_wifiDisableFirmwareRoamingInIdleMode">false</bool>
     <!-- Boolean indicating whether the framework updates country from scan results when there is
          no telephony country code. This is applied to all generic cases and might require the
          regulatory approval (for example, FCC pre-approval is required according to "594280 D01
@@ -1331,13 +1352,13 @@
          value should be a multiple of 100 microseconds. Non-zero values in this setting take
          precedence over individual responder settings, effectively enforcing a system-wide minimum
          measurement interval for non-trigger based ranging operations.. -->
-    <integer translatable="false" name="config_wifi80211azMinTimeBetweenNtbMeasurementsMicros">250000</integer>
+    <integer translatable="false" name="config_wifi80211azMinTimeBetweenNtbMeasurementsMicros">0</integer>
     <!-- Integer for maximum time between IEEE 802.11az non-trigger based ranging measurements in
          microseconds. Note that ranging request converts this to units of 10 milliseconds. So the
          value should be a multiple of 10000 microseconds. Non-zero values in this setting take
          precedence over individual responder settings, effectively enforcing a system-wide maximum
          measurement interval for non-trigger based ranging operations. -->
-    <integer translatable="false" name="config_wifi80211azMaxTimeBetweenNtbMeasurementsMicros">15000000</integer>
+    <integer translatable="false" name="config_wifi80211azMaxTimeBetweenNtbMeasurementsMicros">0</integer>
 
     <!-- Boolean indicating whether the device supports d2d allowed control when infra STA is disabled  -->
     <bool translatable="false" name ="config_wifiD2dAllowedControlSupportedWhenInfraStaDisabled">false</bool>
@@ -1383,7 +1404,7 @@
     <!-- Boolean indicating whether the WiFi framework network selection should set the target BSSID. -->
     <bool translatable="false" name="config_wifiNetworkSelectionSetTargetBssid">false</bool>
 
-    <!-- Array containing carrier IDs whose networks should not auto-connect upon initial discovery.
+    <!-- (Deprecated) Array containing carrier IDs whose networks should not auto-connect upon initial discovery.
          These networks are eligible to become network selection candidates if they still appear in
          the scan results after the delay period has passed. Carriers who have requested this
          feature are included in the array by default.
@@ -1396,10 +1417,21 @@
         -->
     </integer-array>
 
-    <!-- Delay time in milliseconds for delayed carrier network selection.
+    <!-- (Deprecated) Delay time in milliseconds for delayed carrier network selection.
          See also config_wifiDelayedSelectionCarrierIds.
      -->
     <integer translatable="false" name="config_wifiDelayedCarrierSelectionTimeMs">90000</integer>
+
+    <!-- Array containing carrier IDs whose networks should not be affected by the carrier mobility
+         filter. For any carrier whose ID is not in this blocklist, their networks will be prevented
+         from auto-connecting while the device is in motion (ex. while driving, biking, etc).
+     -->
+    <integer-array translatable="false" name="config_wifiMobilityFilterCarrierIdBlocklist">
+        <!-- Below is a sample configuration for this list:
+        <item>1234</item>
+        <item>5678</item>
+        -->
+    </integer-array>
 
     <!-- Boolean indicating whether the device supports Wi-Fi Alliance WPA3 Specification
          version 3.3 Section 14 - RSN Overriding.
@@ -1432,4 +1464,13 @@
     <integer translatable="false" name="config_internalScorerType">1</integer>
     <!-- Configure if the external scorer should take priority over the internal scorer. -->
     <bool translatable="false" name="config_prioritizeExternalScorer">true</bool>
+
+    <!-- Boolean indicating whether the device needs the SDEA header from the framework. -->
+    <bool translatable="false" name="config_wifiAwareSdeaHeaderFromFramework">false</bool>
+    <!-- Boolean indicating whether the Wi-Fi network pre-evaluation is enabled. -->
+    <bool translatable="false" name="config_preEvaluationEnabled">true</bool>
+    <!-- Config if supplicant aware should be enabled. -->
+    <bool translatable="false" name="config_supplicantAwareEnabled">false</bool>
+    <!-- Boolean indicating whether wificond migration is enabled . -->
+    <bool translatable="false" name="config_wificondMigrationEnabled">true</bool>
 </resources>

@@ -49,6 +49,7 @@ import android.net.wifi.WifiScanner.ScanSettings;
 import android.net.wifi.WifiSsid;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.util.ScanResultUtil;
+import android.net.wifi.util.WifiResourceCache;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
@@ -189,7 +190,9 @@ public class WifiConnectivityManager {
     private final FrameworkFacade mFrameworkFacade;
     private final WifiPermissionsUtil mWifiPermissionsUtil;
     private final WifiDialogManager mWifiDialogManager;
+    private final WifiNative mWifiNative;
     private final WifiThreadRunner mWifiThreadRunner;
+    private final WifiResourceCache mResourceCache;
 
     private WifiScannerInternal mScanner;
     private final MultiInternetManager mMultiInternetManager;
@@ -278,6 +281,7 @@ public class WifiConnectivityManager {
     private CachedWifiCandidates mCachedWifiCandidates = null;
     private @DeviceMobilityState int mDeviceMobilityState =
             WifiManager.DEVICE_MOBILITY_STATE_UNKNOWN;
+    private Set<Integer> mMobilityFilterCarrierIdBlocklist = new HashSet<>();
 
     // Cached WifiCandidate timestamps for delayed carrier network selection
     private Map<WifiCandidates.Key, Long> mDelayedCarrierCandidateTimestamps = new HashMap<>();
@@ -421,10 +425,39 @@ public class WifiConnectivityManager {
      * Utility band filter method for multi-internet use-case.
      */
     @VisibleForTesting
-    public boolean filterMultiInternetFrequency(int primaryFreq, int secondaryFreq) {
+    public boolean filterMultiInternetFrequency(int primaryFreq, int secondaryFreq,
+            String interfaceName) {
+        if (mWifiGlobals.isMultiInternetSameBandConnectionAllowed()
+                && primaryFreq == secondaryFreq) {
+            return true;
+        }
         return mWifiGlobals.isSupportMultiInternetDual5G()
                 ? ScanResult.isValidCombinedBandForDual5GHz(primaryFreq, secondaryFreq)
-                : ScanResult.toBand(primaryFreq) != ScanResult.toBand(secondaryFreq);
+                : isSimultaneousBandSupported(
+                        ScanResult.toBand(primaryFreq), ScanResult.toBand(secondaryFreq),
+                        interfaceName);
+    }
+
+    private boolean isSimultaneousBandSupported(@ScanResult.WifiBand int band1,
+            @ScanResult.WifiBand int band2, String interfaceName) {
+        if (band1 == band2) {
+            return false;
+        }
+        Set<List<Integer>> supportedBandSet = mWifiNative.getSupportedBandCombinations(
+                interfaceName);
+        if (supportedBandSet == null) {
+            Log.e(TAG, "getSupportedBandCombinations is null");
+            return false;
+        }
+        for (List<Integer> supportedBands : supportedBandSet) {
+            if (supportedBands.contains(band1) && supportedBands.contains(band2)) {
+                return true;
+            }
+        }
+        if (mVerboseLoggingEnabled) {
+            Log.i(TAG, "band " + band1 + " and " + band2 + " are not supported simultaneously");
+        }
+        return false;
     }
 
     /**
@@ -451,11 +484,10 @@ public class WifiConnectivityManager {
             return false;
         }
         final WifiInfo primaryInfo = primaryCcm.getConnectionInfo();
-        final int primaryBand = ScanResult.toBand(primaryInfo.getFrequency());
-
         List<WifiCandidates.Candidate> secondaryCmmCandidates;
+        boolean allowSameBssidConnection = mWifiGlobals.isMultiInternetSameBssidConnectionAllowed();
         if (mMultiInternetManager.isStaConcurrencyForMultiInternetMultiApAllowed()) {
-            if (primaryCcm.isMlo()) {
+            if (primaryCcm.isMlo() && !allowSameBssidConnection) {
                 // For an MLO connection, select candidate BSSIDs that are not affiliated or the
                 // primary link's BSSID, as the primary's BSSID may differ from its link MAC
                 // address.
@@ -470,16 +502,24 @@ public class WifiConnectivityManager {
                 secondaryCmmCandidates = candidates.stream()
                         .filter(c -> {
                             return filterMultiInternetFrequency(
-                                    primaryInfo.getFrequency(), c.getFrequency());
+                                    primaryInfo.getFrequency(), c.getFrequency(),
+                                    primaryCcm.getInterfaceName())
+                                    && (allowSameBssidConnection
+                                    || !TextUtils.equals(c.getKey().bssid.toString(),
+                                    primaryCcm.getConnectedBssid()));
                         })
                         .collect(Collectors.toList());
             }
         } else {
             // Only allow the candidates have the same SSID as the primary.
             secondaryCmmCandidates = candidates.stream().filter(c -> {
-                return filterMultiInternetFrequency(primaryInfo.getFrequency(), c.getFrequency())
-                        && !primaryCcm.isAffiliatedLinkBssid(c.getKey().bssid) && TextUtils.equals(
-                        c.getKey().matchInfo.networkSsid, primaryInfo.getSSID())
+                return filterMultiInternetFrequency(primaryInfo.getFrequency(), c.getFrequency(),
+                        primaryCcm.getInterfaceName())
+                        && (allowSameBssidConnection
+                        || (!primaryCcm.isAffiliatedLinkBssid(c.getKey().bssid)
+                        && !TextUtils.equals(c.getKey().bssid.toString(),
+                        primaryCcm.getConnectedBssid())))
+                        && TextUtils.equals(c.getKey().matchInfo.networkSsid, primaryInfo.getSSID())
                         && c.getKey().networkId == primaryInfo.getNetworkId()
                         && c.getKey().securityType == primaryInfo.getCurrentSecurityType();
             }).collect(Collectors.toList());
@@ -641,7 +681,8 @@ public class WifiConnectivityManager {
 
         List<WifiNetworkSelector.ClientModeManagerState> cmmStates = new ArrayList<>();
         WifiNetworkSelector.ClientModeManagerState primaryCmmState = null;
-        Set<String> connectedSsids = new HashSet<>();
+        Set<String> connectedSsids = new ArraySet<>();
+        Set<String> connectedBssids = new ArraySet<>();
         boolean hasExistingSecondaryCmm = false;
         for (ClientModeManager clientModeManager :
                 mActiveModeWarden.getInternetConnectivityClientModeManagers()) {
@@ -654,6 +695,7 @@ public class WifiConnectivityManager {
             WifiInfo wifiInfo = clientModeManager.getConnectionInfo();
             if (clientModeManager.isConnected()) {
                 connectedSsids.add(wifiInfo.getSSID());
+                connectedBssids.add(wifiInfo.getBSSID());
             }
             WifiNetworkSelector.ClientModeManagerState cmmState =
                     new WifiNetworkSelector.ClientModeManagerState(clientModeManager);
@@ -686,7 +728,7 @@ public class WifiConnectivityManager {
             }
         }
         Set<String> bssidBlocklist = mWifiBlocklistMonitor.updateAndGetBssidBlocklistForSsids(
-                connectedSsids);
+                connectedSsids, connectedBssids);
         updateUserDisabledList(scanDetails);
         // Clear expired recent failure statuses
         mConfigManager.cleanupExpiredRecentFailureReasons();
@@ -942,7 +984,7 @@ public class WifiConnectivityManager {
             List<WifiCandidates.Candidate> candidates) {
         boolean deviceIsMoving = mDeviceMobilityState == WifiManager.DEVICE_MOBILITY_STATE_LOW_MVMT
                 || mDeviceMobilityState == WifiManager.DEVICE_MOBILITY_STATE_HIGH_MVMT;
-        if (!Flags.filterCarrierNetworksWhileInMotion() || !deviceIsMoving) {
+        if (!deviceIsMoving) {
             return candidates;
         }
         if (candidates == null || candidates.isEmpty()) {
@@ -956,7 +998,8 @@ public class WifiConnectivityManager {
             WifiConfiguration configuration =
                     mConfigManager.getConfiguredNetwork(candidate.getNetworkConfigId());
             if (configuration != null && !configuration.carrierMerged
-                    && configuration.carrierId != TelephonyManager.UNKNOWN_CARRIER_ID) {
+                    && configuration.carrierId != TelephonyManager.UNKNOWN_CARRIER_ID
+                    && !mMobilityFilterCarrierIdBlocklist.contains(configuration.carrierId)) {
                 numCarrierCandidates++;
             } else {
                 filteredCandidates.add(candidate);
@@ -1051,8 +1094,10 @@ public class WifiConnectivityManager {
         }
         Log.i(TAG, "Scheduling delayed carrier partial scan to run in "
                 + mDelayedCarrierSelectionTimeMs + " ms");
-        mEventHandler.postDelayed(() -> startDelayedCarrierPartialScan(),
-                mDelayedCarrierPartialScanToken, mDelayedCarrierSelectionTimeMs);
+        mWifiThreadRunner.postDelayed(() -> startDelayedCarrierPartialScan(),
+                mDelayedCarrierSelectionTimeMs,
+                "Trigger delayed carrier partial scan",
+                mDelayedCarrierPartialScanToken);
         mDelayedCarrierPartialScanScheduled = true;
     }
 
@@ -1530,7 +1575,8 @@ public class WifiConnectivityManager {
             WifiCarrierInfoManager wifiCarrierInfoManager,
             WifiCountryCode wifiCountryCode,
             @NonNull WifiDialogManager wifiDialogManager,
-            WifiDeviceStateChangeManager wifiDeviceStateChangeManager) {
+            WifiDeviceStateChangeManager wifiDeviceStateChangeManager,
+            WifiNative wifiNative) {
         mContext = context;
         mScoringParams = scoringParams;
         mConfigManager = configManager;
@@ -1562,6 +1608,8 @@ public class WifiConnectivityManager {
         mWifiCarrierInfoManager = wifiCarrierInfoManager;
         mWifiCountryCode = wifiCountryCode;
         mWifiDialogManager = wifiDialogManager;
+        mWifiNative = wifiNative;
+        mResourceCache = mContext.getResourceCache();
 
         mDelayedCarrierSelectionTimeMs = mContext.getResources().getInteger(
                 R.integer.config_wifiDelayedCarrierSelectionTimeMs);
@@ -1570,6 +1618,15 @@ public class WifiConnectivityManager {
         if (delayedSelectionCarrierIds != null && delayedSelectionCarrierIds.length != 0) {
             for (Integer carrierId : delayedSelectionCarrierIds) {
                 mDelayedSelectionCarrierIds.add(carrierId);
+            }
+        }
+
+        int[] mobilityFilterCarrierIdBlocklist = mResourceCache.getIntArray(
+            R.array.config_wifiMobilityFilterCarrierIdBlocklist);
+        if (mobilityFilterCarrierIdBlocklist != null
+                && mobilityFilterCarrierIdBlocklist.length != 0) {
+            for (Integer carrierId : mobilityFilterCarrierIdBlocklist) {
+                mMobilityFilterCarrierIdBlocklist.add(carrierId);
             }
         }
 
@@ -2274,12 +2331,14 @@ public class WifiConnectivityManager {
             localLog("Saved networks / suggestions update will restart pno scan in "
                     + NETWORK_CHANGE_TRIGGER_PNO_THROTTLE_MS + "ms");
             mDelayedPnoScanPending = true;
-            mEventHandler.postDelayed(
+            mWifiThreadRunner.postDelayed(
                     () -> {
                         mDelayedPnoScanPending = false;
                         startConnectivityScan(false);
                     },
-                    mDelayedPnoScanToken, NETWORK_CHANGE_TRIGGER_PNO_THROTTLE_MS);
+                    NETWORK_CHANGE_TRIGGER_PNO_THROTTLE_MS,
+                    "Trigger delayed PNO scan",
+                    mDelayedPnoScanToken);
         }
     }
 
@@ -2679,8 +2738,7 @@ public class WifiConnectivityManager {
                 mWifiMetrics.enterDeviceMobilityState(newState);
             }
         }
-        if (mScreenOn && newState == WifiManager.DEVICE_MOBILITY_STATE_STATIONARY
-                && Flags.scanOptimizationWithMobilityChange()) {
+        if (mScreenOn && newState == WifiManager.DEVICE_MOBILITY_STATE_STATIONARY) {
             startConnectivityScan(false);
         }
     }
@@ -2947,7 +3005,7 @@ public class WifiConnectivityManager {
             mHighMvmtDelayedPartialScanTimerSet = false;
         }
         if (mDelayedCarrierPartialScanScheduled) {
-            mEventHandler.removeCallbacksAndMessages(mDelayedCarrierPartialScanToken);
+            mWifiThreadRunner.removeCallbacks(mDelayedCarrierPartialScanToken);
             mDelayedCarrierPartialScanScheduled = false;
         }
     }
@@ -2962,20 +3020,20 @@ public class WifiConnectivityManager {
         }
         localLog("schedulePeriodicScanTimer intervalMs " + intervalMs);
         mPeriodicScanTimerSet = true;
-        mEventHandler.postDelayed(() -> {
+        mWifiThreadRunner.postDelayed(() -> {
             mPeriodicScanTimerSet = false;
             // Schedule the next timer and start a single scan if screen is on.
             if (mScreenOn) {
                 startPeriodicSingleScan();
             }
-        }, mPeriodicScanTimerToken, intervalMs);
+        }, intervalMs, "Schedule next periodic scan", mPeriodicScanTimerToken);
     }
 
     // Cancel periodic scan timer
     private void cancelPeriodicScanTimer() {
         if (mPeriodicScanTimerSet) {
             localLog("cancelPeriodicScanTimer");
-            mEventHandler.removeCallbacksAndMessages(mPeriodicScanTimerToken);
+            mWifiThreadRunner.removeCallbacks(mPeriodicScanTimerToken);
             mPeriodicScanTimerSet = false;
         }
     }
@@ -3075,17 +3133,18 @@ public class WifiConnectivityManager {
         if (mScreenOn) {
             // cancel any queued PNO scans since the screen is turned on.
             mDelayedPnoScanPending = false;
-            mEventHandler.removeCallbacksAndMessages(mDelayedPnoScanToken);
+            mWifiThreadRunner.removeCallbacks(mDelayedPnoScanToken);
 
             if (mNextScreenOnConnectivityScanDelayMs > 0) {
-                mEventHandler.postDelayed(() -> {
+                mWifiThreadRunner.postDelayed(() -> {
                     startConnectivityScan(SCAN_ON_SCHEDULE);
-                }, mDelayedStartPeriodicScanToken, mNextScreenOnConnectivityScanDelayMs);
+                }, mNextScreenOnConnectivityScanDelayMs, "Trigger screen on scan",
+                        mDelayedStartPeriodicScanToken);
                 mNextScreenOnConnectivityScanDelayMs = 0;
                 return;
             }
         } else {
-            mEventHandler.removeCallbacksAndMessages(mDelayedStartPeriodicScanToken);
+            mWifiThreadRunner.removeCallbacks(mDelayedStartPeriodicScanToken);
         }
         startConnectivityScan(SCAN_ON_SCHEDULE);
     }

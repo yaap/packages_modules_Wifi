@@ -33,6 +33,7 @@ import static org.mockito.Mockito.when;
 
 import android.net.MacAddress;
 import android.net.wifi.CoexUnsafeChannel;
+import android.net.wifi.WifiContext;
 import android.net.wifi.p2p.WifiP2pConfig;
 import android.net.wifi.p2p.WifiP2pDirInfo;
 import android.net.wifi.p2p.WifiP2pGroup;
@@ -58,19 +59,21 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Unit tests for SupplicantP2pIfaceHal, which functions as a wrapper for either
- * SupplicantP2pIfaceHalHidlImpl or SupplicantP2pIfaceHalAidlImpl, depending on
- * which service (HIDL or AIDL) is available. Test the initialization logic and
- * verify that calls to all public methods are forwarded to the actual implementation.
+ * Unit tests for {@link SupplicantP2pIfaceHal}, which functions as a wrapper for either HIDL or
+ * AIDL (vendor or mainline) implementation of the Supplicant P2P interface, depending on which
+ * service is available. Test the initialization logic and verify that calls to all public methods
+ * are forwarded to the actual implementation.
  */
 public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     private SupplicantP2pIfaceHalSpy mDut;
     private @Mock SupplicantP2pIfaceHalHidlImpl mP2pIfaceHalHidlMock;
-    private @Mock SupplicantP2pIfaceHalAidlImpl mP2pIfaceHalAidlMock;
+    private @Mock SupplicantP2pIfaceHalAidlVendorImpl mP2pIfaceHalAidlMock;
+    private @Mock SupplicantP2pIfaceHalAidlMainlineImpl mP2pIfaceHalAidlMainlineMock;
     private @Mock WifiNative.SupplicantDeathEventHandler mSupplicantHalDeathHandler;
     private @Mock WifiP2pMonitor mMonitor;
     private @Mock WifiGlobals mWifiGlobals;
     private @Mock WifiInjector mWifiInjector;
+    private @Mock WifiContext mContext;
 
     private static final String IFACE_NAME = "wlan0";
     private static final String BSSID = "fa:45:23:23:12:12";
@@ -93,6 +96,9 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     private static final WifiP2pDirInfo TEST_DIR_INFO = new WifiP2pDirInfo(
             MacAddress.fromString(BSSID), TEST_NONCE, TEST_DIR_TAG);
 
+    /**
+     * Implementation of SupplicantP2pIfaceHalSpy that uses the AIDL Vendor mock internally.
+     */
     private class SupplicantP2pIfaceHalSpy extends SupplicantP2pIfaceHal {
         SupplicantP2pIfaceHalSpy() {
             super(mMonitor, mWifiGlobals, mWifiInjector);
@@ -105,8 +111,21 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     }
 
     /**
-     * Implementation of SupplicantP2pIfaceHalSpy that uses the HIDL mock internally
-     * rather than the default AIDL mock.
+     * Implementation of SupplicantP2pIfaceHalSpy that uses the AIDL Mainline mock internally.
+     */
+    private class SupplicantP2pIfaceHalMainlineSpy extends SupplicantP2pIfaceHalSpy {
+        SupplicantP2pIfaceHalMainlineSpy() {
+            super();
+        }
+
+        @Override
+        protected ISupplicantP2pIfaceHal createP2pIfaceHalMockable()  {
+            return mP2pIfaceHalAidlMainlineMock;
+        }
+    }
+
+    /**
+     * Implementation of SupplicantP2pIfaceHalSpy that uses the HIDL mock internally.
      */
     private class SupplicantP2pIfaceHidlHalSpy extends SupplicantP2pIfaceHalSpy {
         SupplicantP2pIfaceHidlHalSpy() {
@@ -140,12 +159,25 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     }
 
     /**
-     * Initialize SupplicantP2pIfaceHal with the AIDL implementation.
+     * Initialize SupplicantP2pIfaceHal with the AIDL Vendor implementation.
      */
-    private void initializeWithAidlImpl(boolean shouldSucceed) {
+    private void initializeWithAidlVendorImpl(boolean shouldSucceed) {
         when(mP2pIfaceHalAidlMock.initialize()).thenReturn(shouldSucceed);
         assertEquals(shouldSucceed, mDut.initialize());
         verify(mP2pIfaceHalAidlMock).initialize();
+        verify(mP2pIfaceHalAidlMainlineMock, never()).initialize();
+        verify(mP2pIfaceHalHidlMock, never()).initialize();
+    }
+
+    /**
+     * Initialize SupplicantP2pIfaceHal with the AIDL Mainline implementation.
+     */
+    private void initializeWithAidlMainlineImpl(boolean shouldSucceed) {
+        mDut = new SupplicantP2pIfaceHalMainlineSpy();
+        when(mP2pIfaceHalAidlMainlineMock.initialize()).thenReturn(shouldSucceed);
+        assertEquals(shouldSucceed, mDut.initialize());
+        verify(mP2pIfaceHalAidlMainlineMock).initialize();
+        verify(mP2pIfaceHalAidlMock, never()).initialize();
         verify(mP2pIfaceHalHidlMock, never()).initialize();
     }
 
@@ -156,16 +188,25 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
         mDut = new SupplicantP2pIfaceHidlHalSpy();
         when(mP2pIfaceHalHidlMock.initialize()).thenReturn(shouldSucceed);
         assertEquals(shouldSucceed, mDut.initialize());
-        verify(mP2pIfaceHalAidlMock, never()).initialize();
         verify(mP2pIfaceHalHidlMock).initialize();
+        verify(mP2pIfaceHalAidlMock, never()).initialize();
+        verify(mP2pIfaceHalAidlMainlineMock, never()).initialize();
     }
 
     /**
-     * Tests successful initialization with the AIDL implementation.
+     * Tests successful initialization with the AIDL Vendor implementation.
      */
     @Test
-    public void testInitSuccessAidl() {
-        initializeWithAidlImpl(true);
+    public void testInitSuccessAidlVendor() {
+        initializeWithAidlVendorImpl(true);
+    }
+
+    /**
+     * Tests successful initialization with the AIDL Mainline implementation.
+     */
+    @Test
+    public void testInitSuccessAidlMainline() {
+        initializeWithAidlMainlineImpl(true);
     }
 
     /**
@@ -177,11 +218,19 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     }
 
     /**
-     * Tests failed initialization with the AIDL implementation.
+     * Tests failed initialization with the AIDL Vendor implementation.
      */
     @Test
-    public void testInitFailureAidl() {
-        initializeWithAidlImpl(false);
+    public void testInitFailureAidlVendor() {
+        initializeWithAidlVendorImpl(false);
+    }
+
+    /**
+     * Tests failed initialization with the AIDL Mainline implementation.
+     */
+    @Test
+    public void testInitFailureAidlMainline() {
+        initializeWithAidlMainlineImpl(false);
     }
 
     /**
@@ -212,10 +261,22 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetupIface() {
-        initializeWithAidlImpl(true);
-        when(mP2pIfaceHalAidlMock.setupIface(anyString())).thenReturn(true);
-        assertTrue(mDut.setupIface(IFACE_NAME));
-        verify(mP2pIfaceHalAidlMock).setupIface(eq(IFACE_NAME));
+        initializeWithAidlVendorImpl(true);
+        when(mP2pIfaceHalAidlMock.setupIface(anyString(), anyInt())).thenReturn(true);
+        assertTrue(mDut.setupIface(IFACE_NAME, 0));
+        verify(mP2pIfaceHalAidlMock).setupIface(eq(IFACE_NAME), eq(0));
+    }
+
+    /**
+     * Test that we can call setupIface with a user id.
+     */
+    @Test
+    public void testSetupIfaceWithUserId() {
+        final int userId = 10;
+        initializeWithAidlVendorImpl(true);
+        when(mP2pIfaceHalAidlMock.setupIface(anyString(), anyInt())).thenReturn(true);
+        assertTrue(mDut.setupIface(IFACE_NAME, userId));
+        verify(mP2pIfaceHalAidlMock).setupIface(eq(IFACE_NAME), eq(userId));
     }
 
     /**
@@ -223,7 +284,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testTeardownIface() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.teardownIface(anyString())).thenReturn(true);
         assertTrue(mDut.teardownIface(IFACE_NAME));
         verify(mP2pIfaceHalAidlMock).teardownIface(eq(IFACE_NAME));
@@ -234,7 +295,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testIsInitializationStarted() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.isInitializationStarted()).thenReturn(true);
         assertTrue(mDut.isInitializationStarted());
         verify(mP2pIfaceHalAidlMock).isInitializationStarted();
@@ -245,7 +306,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testIsInitializationComplete() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.isInitializationComplete()).thenReturn(true);
         assertTrue(mDut.isInitializationComplete());
         verify(mP2pIfaceHalAidlMock).isInitializationComplete();
@@ -256,7 +317,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testFind() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         int timeout = 5;
         when(mP2pIfaceHalAidlMock.find(anyInt())).thenReturn(true);
         assertTrue(mDut.find(timeout));
@@ -268,7 +329,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testFindWithType() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         int scanType = WifiP2pManager.WIFI_P2P_SCAN_FULL;
         int freq = WifiP2pManager.WIFI_P2P_SCAN_FREQ_UNSPECIFIED;
         int timeout = 5;
@@ -282,7 +343,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testStopFind() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.stopFind()).thenReturn(true);
         assertTrue(mDut.stopFind());
         verify(mP2pIfaceHalAidlMock).stopFind();
@@ -293,7 +354,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testFlush() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.flush()).thenReturn(true);
         assertTrue(mDut.flush());
         verify(mP2pIfaceHalAidlMock).flush();
@@ -304,7 +365,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testServiceFlush() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.serviceFlush()).thenReturn(true);
         assertTrue(mDut.serviceFlush());
         verify(mP2pIfaceHalAidlMock).serviceFlush();
@@ -315,7 +376,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetPowerSave() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setPowerSave(anyString(), anyBoolean())).thenReturn(true);
         assertTrue(mDut.setPowerSave(IFACE_NAME, ENABLE));
         verify(mP2pIfaceHalAidlMock).setPowerSave(eq(IFACE_NAME), eq(ENABLE));
@@ -326,7 +387,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetGroupIdle() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         int timeout = 5;
         when(mP2pIfaceHalAidlMock.setGroupIdle(anyString(), anyInt())).thenReturn(true);
         assertTrue(mDut.setGroupIdle(IFACE_NAME, timeout));
@@ -338,7 +399,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetSsidPostfix() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setSsidPostfix(anyString())).thenReturn(true);
         assertTrue(mDut.setSsidPostfix(PARAMS));
         verify(mP2pIfaceHalAidlMock).setSsidPostfix(eq(PARAMS));
@@ -349,7 +410,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testConnect() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         WifiP2pConfig config = mock(WifiP2pConfig.class);
         when(mP2pIfaceHalAidlMock.connect(any(WifiP2pConfig.class), anyBoolean())).thenReturn(PIN);
         assertEquals(PIN, mDut.connect(config, ENABLE));
@@ -361,7 +422,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testCancelConnect() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.cancelConnect()).thenReturn(true);
         assertTrue(mDut.cancelConnect());
         verify(mP2pIfaceHalAidlMock).cancelConnect();
@@ -372,7 +433,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testProvisionDiscovery() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         WifiP2pConfig config = mock(WifiP2pConfig.class);
         when(mP2pIfaceHalAidlMock.provisionDiscovery(any(WifiP2pConfig.class))).thenReturn(true);
         assertTrue(mDut.provisionDiscovery(config));
@@ -384,7 +445,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testInvite() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         WifiP2pGroup group = mock(WifiP2pGroup.class);
         when(mP2pIfaceHalAidlMock.invite(any(WifiP2pGroup.class), anyString())).thenReturn(true);
         assertTrue(mDut.invite(group, BSSID));
@@ -396,7 +457,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testReject() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.reject(anyString())).thenReturn(true);
         assertTrue(mDut.reject(BSSID));
         verify(mP2pIfaceHalAidlMock).reject(eq(BSSID));
@@ -407,7 +468,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGetDeviceAddress() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.getDeviceAddress()).thenReturn(BSSID);
         assertEquals(BSSID, mDut.getDeviceAddress());
         verify(mP2pIfaceHalAidlMock).getDeviceAddress();
@@ -418,7 +479,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGetSsid() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         String ssid = "someSsid";
         when(mP2pIfaceHalAidlMock.getSsid(anyString())).thenReturn(ssid);
         assertEquals(ssid, mDut.getSsid(BSSID));
@@ -430,7 +491,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testReinvoke() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.reinvoke(anyInt(), anyString(), anyInt())).thenReturn(true);
         assertTrue(mDut.reinvoke(NETWORK_ID, BSSID, -1));
         verify(mP2pIfaceHalAidlMock).reinvoke(eq(NETWORK_ID), eq(BSSID), eq(-1));
@@ -441,7 +502,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGroupAdd() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.groupAdd(anyInt(), anyBoolean(), anyBoolean())).thenReturn(true);
         assertTrue(mDut.groupAdd(NETWORK_ID, ENABLE, DISABLE));
         verify(mP2pIfaceHalAidlMock).groupAdd(eq(NETWORK_ID), eq(ENABLE), eq(DISABLE));
@@ -452,7 +513,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGroupAddWrapper() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.groupAdd(anyInt(), anyBoolean(), anyBoolean())).thenReturn(true);
         assertTrue(mDut.groupAdd(ENABLE, DISABLE));
         verify(mP2pIfaceHalAidlMock).groupAdd(eq(-1) /* set by wrapper */, eq(ENABLE), eq(DISABLE));
@@ -463,7 +524,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGroupAddWithConfig() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         String networkName = "someName";
         String passphrase = "somePassword";
         @WifiP2pConfig.PccModeConnectionType int connectionType =
@@ -485,7 +546,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGroupRemove() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.groupRemove(anyString())).thenReturn(true);
         assertTrue(mDut.groupRemove(IFACE_NAME));
         verify(mP2pIfaceHalAidlMock).groupRemove(eq(IFACE_NAME));
@@ -496,7 +557,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGetGroupCapability() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         int capabilities = 0;
         when(mP2pIfaceHalAidlMock.getGroupCapability(anyString())).thenReturn(capabilities);
         assertEquals(capabilities, mDut.getGroupCapability(BSSID));
@@ -508,7 +569,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testConfigureExtListen() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         int period = 2;
         int interval = 3;
         when(mP2pIfaceHalAidlMock.configureExtListen(anyBoolean(), anyInt(), anyInt(), any()))
@@ -523,7 +584,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetListenChannel() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setListenChannel(anyInt())).thenReturn(true);
         assertTrue(mDut.setListenChannel(CHANNEL));
         verify(mP2pIfaceHalAidlMock).setListenChannel(eq(CHANNEL));
@@ -534,7 +595,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetOperatingChannel() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         List<CoexUnsafeChannel> unsafeChannels = new ArrayList<>();
         when(mP2pIfaceHalAidlMock.setOperatingChannel(anyInt(), any(List.class))).thenReturn(true);
         assertTrue(mDut.setOperatingChannel(CHANNEL, unsafeChannels));
@@ -546,7 +607,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testServiceAdd() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         WifiP2pServiceInfo serviceInfo = mock(WifiP2pServiceInfo.class);
         when(mP2pIfaceHalAidlMock.serviceAdd(any(WifiP2pServiceInfo.class))).thenReturn(true);
         assertTrue(mDut.serviceAdd(serviceInfo));
@@ -558,7 +619,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testServiceRemove() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         WifiP2pServiceInfo serviceInfo = mock(WifiP2pServiceInfo.class);
         when(mP2pIfaceHalAidlMock.serviceRemove(any(WifiP2pServiceInfo.class))).thenReturn(true);
         assertTrue(mDut.serviceRemove(serviceInfo));
@@ -570,7 +631,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testRequestServiceDiscovery() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.requestServiceDiscovery(anyString(), anyString()))
                 .thenReturn(RESPONSE);
         assertEquals(RESPONSE, mDut.requestServiceDiscovery(BSSID, PARAMS));
@@ -582,7 +643,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testCancelServiceDiscovery() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.cancelServiceDiscovery(anyString())).thenReturn(true);
         assertTrue(mDut.cancelServiceDiscovery(PARAMS));
         verify(mP2pIfaceHalAidlMock).cancelServiceDiscovery(eq(PARAMS));
@@ -593,7 +654,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetMiracastMode() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         int mode = 5;
         when(mP2pIfaceHalAidlMock.setMiracastMode(anyInt())).thenReturn(true);
         assertTrue(mDut.setMiracastMode(mode));
@@ -605,7 +666,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testStartWpsPbc() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.startWpsPbc(anyString(), anyString())).thenReturn(true);
         assertTrue(mDut.startWpsPbc(IFACE_NAME, BSSID));
         verify(mP2pIfaceHalAidlMock).startWpsPbc(eq(IFACE_NAME), eq(BSSID));
@@ -616,7 +677,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testStartWpsPinKeypad() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.startWpsPinKeypad(anyString(), anyString())).thenReturn(true);
         assertTrue(mDut.startWpsPinKeypad(IFACE_NAME, PIN));
         verify(mP2pIfaceHalAidlMock).startWpsPinKeypad(eq(IFACE_NAME), eq(PIN));
@@ -627,7 +688,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testStartWpsPinDisplay() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.startWpsPinDisplay(anyString(), anyString())).thenReturn(PIN);
         assertEquals(PIN, mDut.startWpsPinDisplay(IFACE_NAME, BSSID));
         verify(mP2pIfaceHalAidlMock).startWpsPinDisplay(eq(IFACE_NAME), eq(BSSID));
@@ -638,7 +699,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testCancelWps() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.cancelWps(anyString())).thenReturn(true);
         assertTrue(mDut.cancelWps(IFACE_NAME));
         verify(mP2pIfaceHalAidlMock).cancelWps(eq(IFACE_NAME));
@@ -649,7 +710,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testEnableWfd() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.enableWfd(anyBoolean())).thenReturn(true);
         assertTrue(mDut.enableWfd(ENABLE));
         verify(mP2pIfaceHalAidlMock).enableWfd(eq(ENABLE));
@@ -660,7 +721,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetWfdDeviceInfo() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setWfdDeviceInfo(anyString())).thenReturn(true);
         assertTrue(mDut.setWfdDeviceInfo(PARAMS));
         verify(mP2pIfaceHalAidlMock).setWfdDeviceInfo(eq(PARAMS));
@@ -671,7 +732,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testRemoveNetwork() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.removeNetwork(anyInt())).thenReturn(true);
         assertTrue(mDut.removeNetwork(NETWORK_ID));
         verify(mP2pIfaceHalAidlMock).removeNetwork(eq(NETWORK_ID));
@@ -682,7 +743,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testLoadGroups() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         WifiP2pGroupList groups = mock(WifiP2pGroupList.class);
         when(mP2pIfaceHalAidlMock.loadGroups(any(WifiP2pGroupList.class))).thenReturn(true);
         assertTrue(mDut.loadGroups(groups));
@@ -694,7 +755,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetWpsDeviceName() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setWpsDeviceName(anyString())).thenReturn(true);
         assertTrue(mDut.setWpsDeviceName(PARAMS));
         verify(mP2pIfaceHalAidlMock).setWpsDeviceName(eq(PARAMS));
@@ -705,7 +766,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetWpsDeviceType() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setWpsDeviceType(anyString())).thenReturn(true);
         assertTrue(mDut.setWpsDeviceType(PARAMS));
         verify(mP2pIfaceHalAidlMock).setWpsDeviceType(eq(PARAMS));
@@ -716,7 +777,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetWpsConfigMethods() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setWpsConfigMethods(anyString())).thenReturn(true);
         assertTrue(mDut.setWpsConfigMethods(PARAMS));
         verify(mP2pIfaceHalAidlMock).setWpsConfigMethods(eq(PARAMS));
@@ -727,7 +788,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGetNfcHandoverRequest() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.getNfcHandoverRequest()).thenReturn(RESPONSE);
         assertEquals(RESPONSE, mDut.getNfcHandoverRequest());
         verify(mP2pIfaceHalAidlMock).getNfcHandoverRequest();
@@ -738,7 +799,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGetNfcHandoverSelect() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.getNfcHandoverSelect()).thenReturn(RESPONSE);
         assertEquals(RESPONSE, mDut.getNfcHandoverSelect());
         verify(mP2pIfaceHalAidlMock).getNfcHandoverSelect();
@@ -749,7 +810,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testResponderReportNfcHandover() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.responderReportNfcHandover(anyString())).thenReturn(true);
         assertTrue(mDut.responderReportNfcHandover(PARAMS));
         verify(mP2pIfaceHalAidlMock).responderReportNfcHandover(eq(PARAMS));
@@ -760,7 +821,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetClientList() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setClientList(anyInt(), anyString())).thenReturn(true);
         assertTrue(mDut.setClientList(NETWORK_ID, PARAMS));
         verify(mP2pIfaceHalAidlMock).setClientList(eq(NETWORK_ID), eq(PARAMS));
@@ -771,7 +832,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testGetClientList() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.getClientList(anyInt())).thenReturn(RESPONSE);
         assertEquals(RESPONSE, mDut.getClientList(NETWORK_ID));
         verify(mP2pIfaceHalAidlMock).getClientList(eq(NETWORK_ID));
@@ -782,7 +843,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSaveConfig() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.saveConfig()).thenReturn(true);
         assertTrue(mDut.saveConfig());
         verify(mP2pIfaceHalAidlMock).saveConfig();
@@ -793,7 +854,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetMacRandomization() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setMacRandomization(anyBoolean())).thenReturn(true);
         assertTrue(mDut.setMacRandomization(ENABLE));
         verify(mP2pIfaceHalAidlMock).setMacRandomization(eq(ENABLE));
@@ -804,7 +865,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testSetWfdR2DeviceInfo() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.setWfdR2DeviceInfo(anyString())).thenReturn(true);
         assertTrue(mDut.setWfdR2DeviceInfo(PARAMS));
         verify(mP2pIfaceHalAidlMock).setWfdR2DeviceInfo(eq(PARAMS));
@@ -815,7 +876,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testRemoveClient() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.removeClient(eq(BSSID), anyBoolean())).thenReturn(true);
         assertTrue(mDut.removeClient(BSSID, true));
         verify(mP2pIfaceHalAidlMock).removeClient(eq(BSSID), eq(true));
@@ -826,7 +887,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testConfigureEapolIpAddressAllocationParamsSuccess() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.configureEapolIpAddressAllocationParams(
                 anyInt(), anyInt(), anyInt(), anyInt())).thenReturn(true);
         assertTrue(mDut.configureEapolIpAddressAllocationParams(0x0101A8C0,
@@ -840,7 +901,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testTerminate() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         doNothing().when(mP2pIfaceHalAidlMock).terminate();
         mDut.terminate();
         verify(mP2pIfaceHalAidlMock).terminate();
@@ -851,7 +912,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testRegisterDeathHandler() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.registerDeathHandler(
                 any(WifiNative.SupplicantDeathEventHandler.class))).thenReturn(true);
         assertTrue(mDut.registerDeathHandler(mSupplicantHalDeathHandler));
@@ -863,7 +924,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
      */
     @Test
     public void testDeregisterDeathHandler() {
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.deregisterDeathHandler()).thenReturn(true);
         assertTrue(mDut.deregisterDeathHandler());
         verify(mP2pIfaceHalAidlMock).deregisterDeathHandler();
@@ -875,7 +936,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     @Test
     public void testStartUsdBasedServiceDiscovery() throws Exception {
         assumeTrue(Environment.isSdkAtLeastB());
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.startUsdBasedServiceDiscovery(any(), any(), anyInt()))
                 .thenReturn(TEST_USD_SESSION_ID);
         WifiP2pUsdBasedServiceConfig usdConfig = new WifiP2pUsdBasedServiceConfig.Builder(
@@ -897,7 +958,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     @Test
     public void testStopUsdBasedServiceDiscovery() throws Exception {
         assumeTrue(Environment.isSdkAtLeastB());
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         doNothing().when(mP2pIfaceHalAidlMock).stopUsdBasedServiceDiscovery(anyInt());
         mDut.stopUsdBasedServiceDiscovery(TEST_USD_SESSION_ID);
         verify(mP2pIfaceHalAidlMock).stopUsdBasedServiceDiscovery(eq(TEST_USD_SESSION_ID));
@@ -909,7 +970,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     @Test
     public void testStartUsdBasedServiceAdvertisement() throws Exception {
         assumeTrue(Environment.isSdkAtLeastB());
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.startUsdBasedServiceAdvertisement(any(), any(), anyInt()))
                 .thenReturn(TEST_USD_SESSION_ID);
         WifiP2pUsdBasedServiceConfig usdConfig = new WifiP2pUsdBasedServiceConfig.Builder(
@@ -931,7 +992,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     @Test
     public void testStopUsdBasedServiceAdvertisement() throws Exception {
         assumeTrue(Environment.isSdkAtLeastB());
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         doNothing().when(mP2pIfaceHalAidlMock).stopUsdBasedServiceAdvertisement(anyInt());
         mDut.stopUsdBasedServiceAdvertisement(TEST_USD_SESSION_ID);
         verify(mP2pIfaceHalAidlMock).stopUsdBasedServiceAdvertisement(eq(TEST_USD_SESSION_ID));
@@ -943,7 +1004,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     @Test
     public void testGetDirInfo() throws Exception {
         assumeTrue(Environment.isSdkAtLeastB());
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.getDirInfo()).thenReturn(TEST_DIR_INFO);
         assertEquals(TEST_DIR_INFO, mDut.getDirInfo());
         verify(mP2pIfaceHalAidlMock).getDirInfo();
@@ -955,7 +1016,7 @@ public class SupplicantP2pIfaceHalTest extends WifiBaseTest {
     @Test
     public void testValidateDirInfo() throws Exception {
         assumeTrue(Environment.isSdkAtLeastB());
-        initializeWithAidlImpl(true);
+        initializeWithAidlVendorImpl(true);
         when(mP2pIfaceHalAidlMock.validateDirInfo(any())).thenReturn(1);
         assertEquals(1, mDut.validateDirInfo(TEST_DIR_INFO));
         verify(mP2pIfaceHalAidlMock).validateDirInfo(eq(TEST_DIR_INFO));

@@ -33,7 +33,6 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyString;
@@ -367,6 +366,8 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 .mockStatic(WifiConfigStore.class, withSettings().lenient())
                 .strictness(Strictness.LENIENT)
                 .startMocking();
+        when(mFeatureFlags.disableInsecureWifiAutojoinWhenAapmOn())
+                .thenReturn(false);
         when(WifiInjector.getInstance()).thenReturn(mWifiInjector);
         when(mWifiInjector.getActiveModeWarden()).thenReturn(mActiveModeWarden);
         when(mWifiInjector.getWifiGlobals()).thenReturn(mWifiGlobals);
@@ -1733,7 +1734,8 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         mAlarmManager.dispatch(BUFFERED_WRITE_ALARM_TAG);
         mLooper.dispatchAll();
         mContextConfigStoreMockOrder.verify(mWifiConfigStore).write();
-        verify(mWifiBlocklistMonitor, times(2)).clearBssidBlocklistForSsid(openNetwork.SSID);
+        verify(mWifiBlocklistMonitor).clearBssidBlocklistForSsid(openNetwork.SSID);
+        verify(mWifiBlocklistMonitor).onEnableNetwork(any());
 
         // Now set it disabled.
         assertTrue(mWifiConfigManager.disableNetwork(
@@ -5131,7 +5133,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
      * Verifies that the method resetSimNetworks updates SIM presence status and SIM configs.
      */
     @Test
-    public void testResetSimNetworks() {
+    public void testResetSimNetworks() throws Exception {
         String expectedIdentity = "13214561234567890@wlan.mnc456.mcc321.3gppnetwork.org";
         when(mDataTelephonyManager.getSubscriberId()).thenReturn("3214561234567890");
         when(mDataTelephonyManager.getSimApplicationState())
@@ -5146,6 +5148,9 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         WifiConfiguration network = WifiConfigurationTestUtil.createEapNetwork();
         WifiConfiguration simNetwork = WifiConfigurationTestUtil.createEapNetwork(
                 WifiEnterpriseConfig.Eap.SIM, WifiEnterpriseConfig.Phase2.NONE);
+        WifiConfiguration ephemeralSimNetwork = WifiConfigurationTestUtil.createEapNetwork(
+                WifiEnterpriseConfig.Eap.SIM, WifiEnterpriseConfig.Phase2.NONE);
+        ephemeralSimNetwork.ephemeral = true;
         WifiConfiguration peapSimNetwork = WifiConfigurationTestUtil.createEapNetwork(
                 WifiEnterpriseConfig.Eap.PEAP, WifiEnterpriseConfig.Phase2.SIM);
         network.enterpriseConfig.setIdentity("identity1");
@@ -5157,6 +5162,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         verifyAddNetworkToWifiConfigManager(network);
         verifyAddNetworkToWifiConfigManager(simNetwork);
         verifyAddNetworkToWifiConfigManager(peapSimNetwork);
+        verifyAddEphemeralNetworkToWifiConfigManager(ephemeralSimNetwork);
         MockitoSession mockSession = ExtendedMockito.mockitoSession()
                 .mockStatic(SubscriptionManager.class)
                 .startMocking();
@@ -5178,8 +5184,37 @@ public class WifiConfigManagerTest extends WifiBaseTest {
                 mWifiConfigManager.getConfiguredNetwork(peapSimNetwork.networkId);
         assertEquals(expectedIdentity, retrievedPeapSimNetwork.enterpriseConfig.getIdentity());
         assertNotEquals("", retrievedPeapSimNetwork.enterpriseConfig.getAnonymousIdentity());
-
+        assertNull(mWifiConfigManager.getConfiguredNetwork(ephemeralSimNetwork.networkId));
         mockSession.finishMocking();
+    }
+
+    /**
+     * Verifies that the method resetSimNetworks removes passpoint networks.
+     */
+    @Test
+    public void testResetSimNetworksRemovesPasspoint() throws Exception {
+        when(mDataTelephonyManager.getSubscriberId()).thenReturn("3214561234567890");
+        when(mDataTelephonyManager.getSimApplicationState())
+                .thenReturn(TelephonyManager.SIM_STATE_LOADED);
+        when(mDataTelephonyManager.getSimOperator()).thenReturn("321456");
+        when(mDataTelephonyManager.getCarrierInfoForImsiEncryption(anyInt())).thenReturn(null);
+        List<SubscriptionInfo> subList = List.of(mock(SubscriptionInfo.class));
+        when(mSubscriptionManager.getCompleteActiveSubscriptionInfoList()).thenReturn(subList);
+        when(mSubscriptionManager.getActiveSubscriptionIdList())
+                .thenReturn(new int[]{DATA_SUBID});
+
+        WifiConfiguration passpointNetwork = WifiConfigurationTestUtil.createPasspointNetwork();
+        // Make it SIM based
+        passpointNetwork.enterpriseConfig.setEapMethod(WifiEnterpriseConfig.Eap.SIM);
+        passpointNetwork.enterpriseConfig.setPhase2Method(WifiEnterpriseConfig.Phase2.NONE);
+
+        verifyAddPasspointNetworkToWifiConfigManager(passpointNetwork);
+
+        // SIM was removed, resetting SIM Networks
+        mWifiConfigManager.resetSimNetworks();
+
+        // Verify passpoint network is removed
+        assertNull(mWifiConfigManager.getConfiguredNetwork(passpointNetwork.networkId));
     }
 
     /**
@@ -5681,7 +5716,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         assertFalse(mWifiConfigManager.isNonCarrierMergedNetworkTemporarilyDisabled(
                 visibleNetwork));
         assertFalse(mWifiConfigManager.isNonCarrierMergedNetworkTemporarilyDisabled(otherNetwork));
-        verify(mOnRestrictAutoJoinToSubIdCallback).onRestrictionStopped();
+        verify(mOnRestrictAutoJoinToSubIdCallback).onRestrictionsStopped();
     }
 
     /**
@@ -8658,7 +8693,7 @@ public class WifiConfigManagerTest extends WifiBaseTest {
      */
     @Test
     public void testConfigOnlyCanBeUpdatedByCreatorUser() {
-        assumeTrue(Environment.isSdkNewerThanB());
+        assumeTrue(Environment.isSdkAtLeastC());
         when(mFeatureFlags.multiUserWifiEnhancement()).thenReturn(true);
         when(mWifiPermissionsUtil.areTwoAppsFromSameUser(anyInt(), anyInt())).thenReturn(false);
         // Adding a network which disallow other user to edit it.
@@ -8684,5 +8719,378 @@ public class WifiConfigManagerTest extends WifiBaseTest {
         // Current user is admin and allow to remove a network.
         assertTrue(mWifiConfigManager.removeNetwork(
                 openNetwork.networkId, TEST_UPDATE_UID, TEST_CREATOR_NAME));
+    }
+
+    /**
+     * Verifies that a DO/PO can update a network even when
+     * {@link WifiConfiguration#isAllowedToUpdateByOtherUsers()} is false and the creator is from a
+     * different user.
+     */
+    @Test
+    public void testCanModifyNetwork_DeviceOwnerCanUpdateDisallowedByOtherUsersNetwork() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(mFeatureFlags.multiUserWifiEnhancement()).thenReturn(true);
+        when(mWifiPermissionsUtil.areTwoAppsFromSameUser(anyInt(), anyInt())).thenReturn(false);
+        mockIsOrganizationOwnedDeviceAdmin(false);
+
+        // Adding a network which disallow other user to edit it.
+        WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
+        openNetwork.setAllowedToUpdateByOtherUsers(false);
+        assertFalse(openNetwork.isAllowedToUpdateByOtherUsers());
+        verifyAddNetworkToWifiConfigManager(openNetwork);
+
+        // A non-DO/PO user from a different user cannot update the network.
+        assertAndSetNetworkBSSID(openNetwork, TEST_BSSID);
+        assertFalse(mWifiConfigManager.addOrUpdateNetwork(
+                openNetwork, TEST_UPDATE_UID).isSuccess());
+        assertFalse(mWifiConfigManager.enableNetwork(
+                openNetwork.networkId, false, TEST_UPDATE_UID, TEST_UPDATE_NAME));
+        assertFalse(mWifiConfigManager.disableNetwork(
+                openNetwork.networkId, TEST_UPDATE_UID, TEST_UPDATE_NAME));
+        assertFalse(mWifiConfigManager.removeNetwork(
+                openNetwork.networkId, TEST_UPDATE_UID, TEST_UPDATE_NAME));
+
+        // A DO/PO user from a different user can update the network.
+        mockIsOrganizationOwnedDeviceAdmin(true);
+        assertTrue(mWifiConfigManager.addOrUpdateNetwork(
+                openNetwork, TEST_UPDATE_UID).isSuccess());
+        assertTrue(mWifiConfigManager.enableNetwork(
+                openNetwork.networkId, false, TEST_UPDATE_UID, TEST_UPDATE_NAME));
+        assertTrue(mWifiConfigManager.disableNetwork(
+                openNetwork.networkId, TEST_UPDATE_UID, TEST_UPDATE_NAME));
+        assertTrue(mWifiConfigManager.removeNetwork(
+                openNetwork.networkId, TEST_UPDATE_UID, TEST_UPDATE_NAME));
+    }
+
+
+    /**
+     * Verifies that getSavedNetworksForScanDetail returns null when the ScanDetail has no
+     * ScanResult.
+     */
+    @Test
+    public void testGetSavedNetworksForScanDetailWithNullScanResult() {
+        ScanDetail scanDetail = mock(ScanDetail.class);
+        when(scanDetail.getScanResult()).thenReturn(null);
+        assertNull(mWifiConfigManager.getSavedNetworksForScanDetail(scanDetail));
+    }
+
+    /**
+     * Verifies that getSavedNetworksForScanDetail returns an empty list when no network matches
+     * the ScanDetail.
+     */
+    @Test
+    public void testGetSavedNetworksForScanDetailWithNoMatchingNetwork() {
+        WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
+        verifyAddNetworkToWifiConfigManager(openNetwork);
+        ScanDetail scanDetail = createScanDetailForNetwork(
+                WifiConfigurationTestUtil.createPskNetwork());
+        assertTrue(mWifiConfigManager.getSavedNetworksForScanDetail(scanDetail).isEmpty());
+    }
+
+    /**
+     * Verifies that getSavedNetworksForScanDetail returns a list with a single matching network.
+     */
+    @Test
+    public void testGetSavedNetworksForScanDetailWithSingleMatchingNetwork() {
+        WifiConfiguration openNetwork = WifiConfigurationTestUtil.createOpenNetwork();
+        verifyAddNetworkToWifiConfigManager(openNetwork);
+        ScanDetail scanDetail = createScanDetailForNetwork(openNetwork);
+        List<WifiConfiguration> matchedNetworks =
+                mWifiConfigManager.getSavedNetworksForScanDetail(scanDetail);
+        assertEquals(1, matchedNetworks.size());
+        assertEquals(openNetwork.networkId, matchedNetworks.get(0).networkId);
+    }
+
+    /**
+     * Verifies that getSavedNetworksForScanDetail returns a list with multiple matching networks.
+     */
+    @Test
+    public void testGetSavedNetworksForScanDetailWithMultipleMatchingNetworks() {
+        WifiConfiguration openNetwork1 = WifiConfigurationTestUtil.createOpenNetwork();
+        openNetwork1.networkId = 0;
+        verifyAddNetworkToWifiConfigManager(openNetwork1);
+
+        WifiConfiguration openNetwork2 = WifiConfigurationTestUtil.createOpenNetwork();
+        openNetwork2.SSID = openNetwork1.SSID;
+        openNetwork2.networkId = 1;
+        openNetwork2.shared = false;
+        verifyAddNetworkToWifiConfigManager(openNetwork2);
+
+        ScanDetail scanDetail = createScanDetailForNetwork(openNetwork1);
+        List<WifiConfiguration> matchedNetworks =
+                mWifiConfigManager.getSavedNetworksForScanDetail(scanDetail);
+        assertEquals(2, matchedNetworks.size());
+        Set<Integer> networkIds = new HashSet<>();
+        for (WifiConfiguration config : matchedNetworks) {
+            networkIds.add(config.networkId);
+        }
+        assertTrue(networkIds.contains(openNetwork1.networkId));
+        assertTrue(networkIds.contains(openNetwork2.networkId));
+    }
+
+    @Test
+    public void testAapmFeatureDisableInsecureWifiAutojoin() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(mFeatureFlags.disableInsecureWifiAutojoinWhenAapmOn()).thenReturn(true);
+
+        // Test with a secure network type
+        WifiConfiguration secureConfig = WifiConfigurationTestUtil.createPskNetwork();
+        NetworkUpdateResult secureResult = addNetworkToWifiConfigManager(secureConfig);
+        assertTrue(secureResult.isSuccess());
+        WifiConfiguration retrievedSecureConfig =
+                mWifiConfigManager.getConfiguredNetwork(secureResult.getNetworkId());
+        assertTrue(retrievedSecureConfig.isAutoJoinInAdvancedProtectionModeEnabled());
+
+        // Test with an insecure network type
+        WifiConfiguration insecureConfig = WifiConfigurationTestUtil.createOpenNetwork();
+        NetworkUpdateResult insecureResult = addNetworkToWifiConfigManager(insecureConfig);
+        assertTrue(insecureResult.isSuccess());
+        WifiConfiguration retrievedInsecureConfig =
+                mWifiConfigManager.getConfiguredNetwork(insecureResult.getNetworkId());
+        assertFalse(retrievedInsecureConfig.isAutoJoinInAdvancedProtectionModeEnabled());
+    }
+
+    /**
+     * Verifies that the user switch won't cause store is written again if user stop is handled.
+     */
+    @Test
+    public void testHandleUserSwitchAfterUserStop() throws Exception {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(mFeatureFlags.multiUserWifiEnhancement()).thenReturn(true);
+        Context user2Context = mock(Context.class);
+        when(user2Context.getSystemService(eq(UserManager.class))).thenReturn(mUserManager);
+        when(mContext.createContextAsUser(any(), eq(0))).thenReturn(user2Context);
+        when(mUserManager.isAdminUser()).thenReturn(true);
+        int user1 = TEST_DEFAULT_USER;
+        int user2 = TEST_DEFAULT_USER + 1;
+        setupUserProfiles(user2);
+
+        // Set up the internal data first.
+        assertTrue(mWifiConfigManager.loadFromStore());
+
+        // Try stopping user 1 first
+        when(mUserManager.isUserUnlockingOrUnlocked(UserHandle.of(user2))).thenReturn(false);
+        mWifiConfigManager.handleUserStop(user1);
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore).write();
+        reset(mWifiConfigStore);
+        // Now try switching the foreground user2, this should NOT trigger a write to store
+        // since it is unlock.
+        mWifiConfigManager.handleUserSwitch(user2);
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never())
+                .switchUserStoresAndRead(any(List.class));
+        mContextConfigStoreMockOrder.verify(mWifiConfigStore, never()).write();
+    }
+
+    /**
+     * Verify that {@link WifiConfigManager#getConfiguredNetworksCreatedByCurrentUserWithPassword()}
+     * only fetches networks created by the current user.
+     * Note that this test case assumes {@link WifiConfiguration#getCreatorUserIdInternal()} returns
+     * the userId of the creator based on mCreatorUserId, instead of userId parsed from creatorUid,
+     * because all uids in this test correspond to system user.
+     */
+    @Test
+    public void testGetConfiguredNetworksCreatedByCurrentUserWithPassword() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(mFeatureFlags.multiUserWifiEnhancement()).thenReturn(true);
+
+        // Setup of two userIds and their mock contexts for handleUserSwitch. User1 is by default
+        // the current user in test.
+        int user1 = TEST_DEFAULT_USER;
+        int user2 = TEST_DEFAULT_USER + 1;
+        setupUserProfiles(user2);
+        Context user1Context = mock(Context.class);
+        when(user1Context.getSystemService(eq(UserManager.class))).thenReturn(mUserManager);
+        Context user2Context = mock(Context.class);
+        when(user2Context.getSystemService(eq(UserManager.class))).thenReturn(mUserManager);
+        when(mUserManager.isAdminUser()).thenReturn(false);
+
+        // Currently on user1 by default. Create config1 under this user and its mCreatorUserId will
+        // be populated as the current userId through the AddOrUpdateNetwork flow.
+        WifiConfiguration config1 = WifiConfigurationTestUtil.createOpenNetwork();
+        verifyAddNetworkToWifiConfigManager(config1);
+
+        // Switch to user2, and create config2.
+        when(mContext.createContextAsUser(any(), eq(0))).thenReturn(user2Context);
+        mWifiConfigManager.handleUserSwitch(user2);
+        WifiConfiguration config2 = WifiConfigurationTestUtil.createOpenNetwork();
+        verifyAddNetworkToWifiConfigManager(config2);
+
+        // Under user2, verify that getConfiguredNetworksCreatedByCurrentUserWithPassword will only
+        // include config2 and not config1.
+        List<WifiConfiguration> expectedWifiConfigurationsForUser2 = List.of(config2);
+        WifiConfigurationTestUtil.assertConfigurationsEqualForConfigManagerAddOrUpdate(
+                expectedWifiConfigurationsForUser2,
+                mWifiConfigManager.getConfiguredNetworksCreatedByCurrentUserWithPassword());
+
+        // Switch back to user1, verify that getConfiguredNetworksCreatedByCurrentUserWithPassword
+        // will only include config1 and not config2.
+        when(mContext.createContextAsUser(any(), eq(0))).thenReturn(user1Context);
+        mWifiConfigManager.handleUserSwitch(user1);
+        List<WifiConfiguration> expectedWifiConfigurationsForUser1 = List.of(config1);
+        WifiConfigurationTestUtil.assertConfigurationsEqualForConfigManagerAddOrUpdate(
+                expectedWifiConfigurationsForUser1,
+                mWifiConfigManager.getConfiguredNetworksCreatedByCurrentUserWithPassword());
+    }
+
+    @Test
+    public void testAapmFeatureNotDisableInsecureWifiAutojoinWhenCreatorUidIsDOPO() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(mFeatureFlags.disableInsecureWifiAutojoinWhenAapmOn()).thenReturn(true);
+        when(mWifiPermissionsUtil.isDeviceOwner(anyInt(), any())).thenReturn(true);
+        // Test with a secure network type
+        WifiConfiguration secureConfig = WifiConfigurationTestUtil.createPskNetwork();
+        NetworkUpdateResult secureResult = addNetworkToWifiConfigManager(secureConfig);
+        assertTrue(secureResult.isSuccess());
+        WifiConfiguration retrievedSecureConfig =
+                mWifiConfigManager.getConfiguredNetwork(secureResult.getNetworkId());
+        assertTrue(retrievedSecureConfig.isAutoJoinInAdvancedProtectionModeEnabled());
+
+        // Test with an insecure network type
+        WifiConfiguration insecureConfig = WifiConfigurationTestUtil.createOpenNetwork();
+        NetworkUpdateResult insecureResult = addNetworkToWifiConfigManager(insecureConfig);
+        assertTrue(insecureResult.isSuccess());
+        WifiConfiguration retrievedInsecureConfig =
+                mWifiConfigManager.getConfiguredNetwork(insecureResult.getNetworkId());
+        assertTrue(retrievedInsecureConfig.isAutoJoinInAdvancedProtectionModeEnabled());
+    }
+
+    /**
+     * Verify that {@link WifiConfigManager#isNetworkConfigured} can check the
+     * existence of a network in internal database correctly.
+     */
+    @Test
+    public void testIsNetworkConfigured() {
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        assertFalse(mWifiConfigManager.isNetworkConfigured(config));
+        verifyAddNetworkToWifiConfigManager(config);
+        assertTrue(mWifiConfigManager.isNetworkConfigured(config));
+    }
+
+    /**
+     * Verify that the shared settings are correctly updated from private to shared.
+     */
+    @Test
+    public void testUpdateNetwork_privateToShared_multiUserEnhancementFlagOn() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(mFeatureFlags.multiUserWifiEnhancement()).thenReturn(true);
+        when(mWifiPermissionsUtil.areTwoAppsFromSameUser(anyInt(), anyInt())).thenReturn(true);
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        config.shared = false;
+        config.setAllowedToUpdateByOtherUsers(false);
+        NetworkUpdateResult result =  addNetworkToWifiConfigManager(config);
+
+        assertTrue(result.isSuccess());
+        config = mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
+        assertFalse(config.shared);
+        assertFalse(config.isAllowedToUpdateByOtherUsers());
+
+        config.shared = true;
+        config.setAllowedToUpdateByOtherUsers(true);
+        result =  updateNetworkToWifiConfigManager(config);
+
+        assertTrue(result.isSuccess());
+        config = mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
+        assertTrue(config.shared);
+        assertTrue(config.isAllowedToUpdateByOtherUsers());
+    }
+
+    /**
+     * Verify that the shared settings are correctly updated from shared to private.
+     */
+    @Test
+    public void testUpdateNetwork_sharedToPrivate_multiUserEnhancementFlagOn() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(mFeatureFlags.multiUserWifiEnhancement()).thenReturn(true);
+        when(mWifiPermissionsUtil.areTwoAppsFromSameUser(anyInt(), anyInt())).thenReturn(true);
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        config.shared = true;
+        config.setAllowedToUpdateByOtherUsers(true);
+        NetworkUpdateResult result =  addNetworkToWifiConfigManager(config);
+
+        assertTrue(result.isSuccess());
+        config = mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
+        assertTrue(config.shared);
+        assertTrue(config.isAllowedToUpdateByOtherUsers());
+
+        config.shared = false;
+        config.setAllowedToUpdateByOtherUsers(false);
+        result =  updateNetworkToWifiConfigManager(config);
+
+        assertTrue(result.isSuccess());
+        config = mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
+        assertFalse(config.shared);
+        assertFalse(config.isAllowedToUpdateByOtherUsers());
+    }
+
+    /**
+     * Verify that {@link WifiConfigManager#updateNetworkWithUidAndCurrentUserIdIfNeeded} can update
+     * the uid and userId of the provided WifiConfiguration correctly.
+     */
+    @Test
+    public void testUpdateNetworkWithUidAndCurrentUserIdIfNeeded() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(mFeatureFlags.multiUserWifiEnhancement()).thenReturn(true);
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+
+        // Switch to a non-default user.
+        final int otherUser = TEST_DEFAULT_USER + 1;
+        setupUserProfiles(otherUser);
+        Context otherUserContext = mock(Context.class);
+        when(mContext.createContextAsUser(any(), eq(0))).thenReturn(otherUserContext);
+        when(otherUserContext.getSystemService(eq(UserManager.class))).thenReturn(mUserManager);
+        when(mUserManager.isAdminUser()).thenReturn(false);
+        mWifiConfigManager.handleUserSwitch(otherUser);
+
+        // When uid has been assigned (by WifiConfigurationTestUtil#createOpenNetwork), this method
+        // does no-op.
+        mWifiConfigManager.updateNetworkWithUidAndCurrentUserIdIfNeeded(config,
+                TEST_OTHER_USER_UID);
+        assertNotEquals(TEST_OTHER_USER_UID, config.creatorUid);
+        assertNotEquals(TEST_OTHER_USER_UID, config.lastUpdateUid);
+        assertNotEquals(otherUser, config.getStoredCreatorUserId());
+
+        // Reset uid and userId to default values.
+        config.creatorUid = -1;
+        config.lastUpdateUid = -1;
+        config.setCreatorUserId(-2);
+
+        // When uid hasn't been assigned, this method updates uid and userId.
+        mWifiConfigManager.updateNetworkWithUidAndCurrentUserIdIfNeeded(config,
+                TEST_OTHER_USER_UID);
+        assertEquals(TEST_OTHER_USER_UID, config.creatorUid);
+        assertEquals(TEST_OTHER_USER_UID, config.lastUpdateUid);
+        assertEquals(otherUser, config.getStoredCreatorUserId());
+    }
+
+    @Test
+    public void testUpdateNetworkAutoJoinInAdvancedProtectionModeEnabled() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(mFeatureFlags.disableInsecureWifiAutojoinWhenAapmOn()).thenReturn(true);
+
+        // 1. Add a network with auto-join enabled.
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
+        config.setAutoJoinInAdvancedProtectionModeEnabled(true);
+        NetworkUpdateResult result = verifyAddNetworkToWifiConfigManager(config);
+        assertTrue(result.isSuccess());
+
+        WifiConfiguration retrievedConfig =
+                mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
+        assertTrue(retrievedConfig.isAutoJoinInAdvancedProtectionModeEnabled());
+
+        // 2. Update the network to disable auto-join.
+        config.setAutoJoinInAdvancedProtectionModeEnabled(false);
+        result = mWifiConfigManager.addOrUpdateNetwork(config, TEST_CREATOR_UID);
+        assertTrue(result.isSuccess());
+
+        retrievedConfig = mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
+        assertFalse(retrievedConfig.isAutoJoinInAdvancedProtectionModeEnabled());
+
+        // 3. Update the network to enable auto-join again.
+        config.setAutoJoinInAdvancedProtectionModeEnabled(true);
+        result = mWifiConfigManager.addOrUpdateNetwork(config, TEST_CREATOR_UID);
+        assertTrue(result.isSuccess());
+
+        retrievedConfig = mWifiConfigManager.getConfiguredNetwork(result.getNetworkId());
+        assertTrue(retrievedConfig.isAutoJoinInAdvancedProtectionModeEnabled());
     }
 }

@@ -38,8 +38,7 @@ apex_defaults {
         "WifiDialog",
     ],
     binaries: select(release_flag("RELEASE_WIFI_MAINLINE_SUPPLICANT_BINARY"), {
-        // TODO: Add the mainline supplicant binary into the flag-enabled list
-        true: [],
+        true: ["wpa_supplicant_mainline"],
         default: [],
     }),
     jni_libs: [
@@ -92,6 +91,9 @@ bootclasspath_fragment {
     name: "com.android.wifi-bootclasspath-fragment",
     contents: ["framework-wifi"],
     apex_available: ["com.android.wifi"],
+    dex_preopt: {
+        profile: "packages/modules/Wifi/apex/boot-image-profile.txt",
+    },
 
     // The bootclasspath_fragments that provide APIs on which this depends.
     fragments: [
@@ -147,4 +149,42 @@ systemserverclasspath_fragment {
     name: "com.android.wifi-systemserverclasspath-fragment",
     standalone_contents: ["service-wifi"],
     apex_available: ["com.android.wifi"],
+}
+
+cc_prebuilt_binary {
+    name: "wpa_supplicant_mainline",
+
+    shared_libs: [
+        "android.hardware.wifi.supplicant-V5-ndk",
+        "android.system.wifi.mainline_supplicant-ndk",
+        "libbase",
+        "libbinder_ndk",
+        "libc++",
+        "libc",
+        "libcrypto",
+        "libcutils",
+        "libdl",
+        "liblog",
+        "libm",
+        "libnl",
+        "libssl",
+        "libutils",
+    ],
+    defaults: [
+        "keystore2_use_latest_aidl_ndk_shared",
+    ],
+
+    prefer: true,
+    enabled: false,
+
+    arch: {
+        arm64: {
+            srcs: ["prebuilts/version_202605-0/arm64/wpa_supplicant_mainline"],
+            enabled: true,
+        },
+    },
+
+    apex_available: [
+        "com.android.wifi",
+    ],
 }

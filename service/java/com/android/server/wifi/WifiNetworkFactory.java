@@ -46,6 +46,7 @@ import android.net.NetworkRequest;
 import android.net.NetworkSpecifier;
 import android.net.wifi.IActionListener;
 import android.net.wifi.ILocalOnlyConnectionStatusListener;
+import android.net.wifi.ILocalOnlyDisconnectionStatusListener;
 import android.net.wifi.INetworkRequestMatchCallback;
 import android.net.wifi.INetworkRequestUserSelectionCallback;
 import android.net.wifi.ScanResult;
@@ -200,10 +201,13 @@ public class WifiNetworkFactory extends NetworkFactory {
      * Indicates that we have new data to serialize.
      */
     private boolean mHasNewDataToSerialize = false;
+    private boolean mDisconnectionCallbackTriggered = false;
 
     private final HashMap<String, RemoteCallbackList<ILocalOnlyConnectionStatusListener>>
             mLocalOnlyStatusListenerPerApp = new HashMap<>();
     private final HashMap<String, String> mFeatureIdPerApp = new HashMap<>();
+    private final HashMap<String, RemoteCallbackList<ILocalOnlyDisconnectionStatusListener>>
+            mLocalOnlyDisconnectionStatusListenerPerApp = new HashMap<>();
     private boolean mShouldTriggerScanImmediately = false;
 
     /**
@@ -800,11 +804,19 @@ public class WifiNetworkFactory extends NetworkFactory {
             // Invalid request with wifi network specifier.
             if (!isRequestWithWifiNetworkSpecifierValid(networkRequest)) {
                 Log.e(TAG, "Invalid network specifier: " + ns + ". Rejecting");
+                sendConnectionFailureIfAllowed(networkRequest.getRequestorPackageName(),
+                    networkRequest.getRequestorUid(),
+                    (WifiNetworkSpecifier) networkRequest.getNetworkSpecifier(),
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN);
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return false;
             }
             if (mWifiPermissionsUtil.isGuestUser()) {
                 Log.e(TAG, "network specifier from guest user, reject");
+                sendConnectionFailureIfAllowed(networkRequest.getRequestorPackageName(),
+                    networkRequest.getRequestorUid(),
+                    (WifiNetworkSpecifier) networkRequest.getNetworkSpecifier(),
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN);
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return false;
             }
@@ -820,6 +832,10 @@ public class WifiNetworkFactory extends NetworkFactory {
                     networkRequest.getRequestorPackageName())) {
                 Log.e(TAG, "Request not from foreground app or service."
                         + " Rejecting request from " + networkRequest.getRequestorPackageName());
+                sendConnectionFailureIfAllowed(networkRequest.getRequestorPackageName(),
+                    networkRequest.getRequestorUid(),
+                    (WifiNetworkSpecifier) networkRequest.getNetworkSpecifier(),
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN);
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return false;
             }
@@ -829,6 +845,10 @@ public class WifiNetworkFactory extends NetworkFactory {
                     networkRequest, mActiveSpecificNetworkRequest)) {
                 Log.e(TAG, "Request cannot override active request."
                         + " Rejecting request from " + networkRequest.getRequestorPackageName());
+                sendConnectionFailureIfAllowed(networkRequest.getRequestorPackageName(),
+                    networkRequest.getRequestorUid(),
+                    (WifiNetworkSpecifier) networkRequest.getNetworkSpecifier(),
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN);
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return false;
             }
@@ -838,6 +858,10 @@ public class WifiNetworkFactory extends NetworkFactory {
                     networkRequest, mConnectedSpecificNetworkRequest)) {
                 Log.e(TAG, "Request cannot override connected request."
                         + " Rejecting request from " + networkRequest.getRequestorPackageName());
+                sendConnectionFailureIfAllowed(networkRequest.getRequestorPackageName(),
+                    networkRequest.getRequestorUid(),
+                    (WifiNetworkSpecifier) networkRequest.getNetworkSpecifier(),
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN);
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return false;
             }
@@ -885,11 +909,19 @@ public class WifiNetworkFactory extends NetworkFactory {
             // Invalid request with wifi network specifier.
             if (!isRequestWithWifiNetworkSpecifierValid(networkRequest)) {
                 Log.e(TAG, "Invalid network specifier: " + ns + ". Rejecting");
+                sendConnectionFailureIfAllowed(networkRequest.getRequestorPackageName(),
+                    networkRequest.getRequestorUid(),
+                    (WifiNetworkSpecifier) networkRequest.getNetworkSpecifier(),
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN);
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return;
             }
             if (mWifiPermissionsUtil.isGuestUser()) {
                 Log.e(TAG, "network specifier from guest user, reject");
+                sendConnectionFailureIfAllowed(networkRequest.getRequestorPackageName(),
+                    networkRequest.getRequestorUid(),
+                    (WifiNetworkSpecifier) networkRequest.getNetworkSpecifier(),
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN);
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return;
             }
@@ -897,6 +929,10 @@ public class WifiNetworkFactory extends NetworkFactory {
             if (!mActiveModeWarden.hasPrimaryClientModeManager()) {
                 Log.e(TAG, "Request with wifi network specifier when wifi is off."
                         + "Rejecting");
+                sendConnectionFailureIfAllowed(networkRequest.getRequestorPackageName(),
+                    networkRequest.getRequestorUid(),
+                    (WifiNetworkSpecifier) networkRequest.getNetworkSpecifier(),
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN);
                 releaseRequestAsUnfulfillableByAnyFactory(networkRequest);
                 return;
             }
@@ -1003,6 +1039,8 @@ public class WifiNetworkFactory extends NetworkFactory {
         pw.println(TAG + ": mGenericConnectionReqCount " + mGenericConnectionReqCount);
         pw.println(TAG + ": mActiveSpecificNetworkRequest " + mActiveSpecificNetworkRequest);
         pw.println(TAG + ": mUserApprovedAccessPointMap " + mUserApprovedAccessPointMap);
+        pw.println(TAG + ": mLocalOnlyDisconnectionStatusListenerPerApp "
+                + mLocalOnlyDisconnectionStatusListenerPerApp);
     }
 
     /**
@@ -1179,7 +1217,8 @@ public class WifiNetworkFactory extends NetworkFactory {
         // TODO(b/188021807): Implement the band request from the specifier on the network to
         // connect.
 
-        // Store the user selected network.
+        // Remove the previous config and store the user selected network.
+        removeNetworkFromWifiConfigManager(mUserSelectedNetwork);
         mUserSelectedNetwork = networkToConnect;
 
         // Request a new CMM for the connection processing.
@@ -1233,8 +1272,7 @@ public class WifiNetworkFactory extends NetworkFactory {
 
     private void handleRejectUserSelection() {
         Log.w(TAG, "User dismissed notification, cancelling " + mActiveSpecificNetworkRequest);
-        if (mFeatureFlags.localOnlyConnectionOptimization()
-                && mActiveSpecificNetworkRequestSpecifier != null
+        if (mActiveSpecificNetworkRequestSpecifier != null
                 && mActiveSpecificNetworkRequest != null) {
             sendConnectionFailureIfAllowed(mActiveSpecificNetworkRequest.getRequestorPackageName(),
                     mActiveSpecificNetworkRequest.getRequestorUid(),
@@ -1410,6 +1448,10 @@ public class WifiNetworkFactory extends NetworkFactory {
     // Invoked at the start of new active request processing.
     private void setupForActiveRequest() {
         if (mActiveSpecificNetworkRequest != null) {
+            sendConnectionFailureIfAllowed(mActiveSpecificNetworkRequest.getRequestorPackageName(),
+                    mActiveSpecificNetworkRequest.getRequestorUid(),
+                    mActiveSpecificNetworkRequestSpecifier,
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NOT_FOUND);
             cleanupActiveRequest();
         }
     }
@@ -1459,6 +1501,7 @@ public class WifiNetworkFactory extends NetworkFactory {
             mConnectedSpecificNetworkRequest = mActiveSpecificNetworkRequest;
             mConnectedSpecificNetworkRequestSpecifier = mActiveSpecificNetworkRequestSpecifier;
             mConnectedUids.clear();
+            mDisconnectionCallbackTriggered = false;
         }
 
         mConnectedUids.add(mActiveSpecificNetworkRequest.getRequestorUid());
@@ -1485,7 +1528,7 @@ public class WifiNetworkFactory extends NetworkFactory {
     }
 
     // Invoked at the termination of current connected request processing.
-    private void teardownForConnectedNetwork() {
+    public void teardownForConnectedNetwork() {
         Log.i(TAG, "Disconnecting from network on reset");
         removeNetworkFromWifiConfigManager(mUserSelectedNetwork);
         mConnectedSpecificNetworkRequest = null;
@@ -1574,6 +1617,10 @@ public class WifiNetworkFactory extends NetworkFactory {
         if (mActiveSpecificNetworkRequest != null) {
             Log.w(TAG, "ClientModeManager retrieval failed or removed, cancelling "
                     + mActiveSpecificNetworkRequest);
+            sendConnectionFailureIfAllowed(mActiveSpecificNetworkRequest.getRequestorPackageName(),
+                    mActiveSpecificNetworkRequest.getRequestorUid(),
+                    mActiveSpecificNetworkRequestSpecifier,
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_UNKNOWN);
             teardownForActiveRequest();
         }
         if (mConnectedSpecificNetworkRequest != null) {
@@ -1635,6 +1682,10 @@ public class WifiNetworkFactory extends NetworkFactory {
             Log.v(TAG, "mUserSelectedScanRetryCount: " + mUserApprovedScanRetryCount);
         }
         if (mSkipUserDialogue && mUserApprovedScanRetryCount >= USER_APPROVED_SCAN_RETRY_MAX) {
+            sendConnectionFailureIfAllowed(mActiveSpecificNetworkRequest.getRequestorPackageName(),
+                    mActiveSpecificNetworkRequest.getRequestorUid(),
+                    mActiveSpecificNetworkRequestSpecifier,
+                    WifiManager.STATUS_LOCAL_ONLY_CONNECTION_FAILURE_NOT_FOUND);
             cleanupActiveRequest();
             return;
         }
@@ -1726,6 +1777,18 @@ public class WifiNetworkFactory extends NetworkFactory {
             }
         }
         mRegisteredCallbacks.finishBroadcast();
+    }
+
+    /**
+     * Get the name of the connected app.
+     */
+    public @NonNull String getConnectedAppName() {
+        if (mConnectedSpecificNetworkRequestSpecifier == null
+                || mConnectedSpecificNetworkRequest == null) {
+            return "";
+        }
+        return getAppName(mConnectedSpecificNetworkRequest.getRequestorPackageName(),
+                mConnectedSpecificNetworkRequest.getRequestorUid()).toString();
     }
 
     private @NonNull CharSequence getAppName(@NonNull String packageName, int uid) {
@@ -2129,6 +2192,110 @@ public class WifiNetworkFactory extends NetworkFactory {
         if (listenersTracker != null && listenersTracker.getRegisteredCallbackCount() == 0) {
             mLocalOnlyStatusListenerPerApp.remove(packageName);
             mFeatureIdPerApp.remove(packageName);
+        }
+    }
+
+    /**
+     * Check whether the input config matches with the currently connected network specifier
+     * @param config WifiConfiguration to check
+     * @return true if match
+     */
+    public boolean isConnectedToConfig(@Nullable WifiConfiguration config) {
+        if (config == null
+                || mConnectedSpecificNetworkRequest == null
+                || mConnectedSpecificNetworkRequestSpecifier == null
+                || mConnectedSpecificNetworkRequestSpecifier.wifiConfiguration == null
+                || !config.fromWifiNetworkSpecifier
+                || mUserSelectedNetwork == null) {
+            return false;
+        }
+        return config.getProfileKey().equals(mUserSelectedNetwork.getProfileKey());
+    }
+
+    /**
+     * Get whether there are disconnection status listeners registered for the currently connected
+     * network.
+     * @return true if there are disconnection status listeners registered
+     */
+    public boolean connectedNetworkHasDisconnectListenerRegistered() {
+        if (mConnectedSpecificNetworkRequest == null
+                || mConnectedSpecificNetworkRequestSpecifier == null) {
+            return false;
+        }
+        RemoteCallbackList<ILocalOnlyDisconnectionStatusListener> listenersTracker =
+                mLocalOnlyDisconnectionStatusListenerPerApp.get(
+                        mConnectedSpecificNetworkRequest.getRequestorPackageName());
+        return listenersTracker != null && listenersTracker.getRegisteredCallbackCount() != 0;
+    }
+
+    /**
+     * Called by the framework when disconnection is imminent due to the given reason.
+     * @param reason reason for disconnection
+     * @param isUserTriggered true if the disconnection is user triggered
+     */
+    public void onDisconnectionExpected(
+            @WifiManager.LocalOnlyDisconnectionStatusCode int reason, boolean isUserTriggered) {
+        if (mDisconnectionCallbackTriggered) {
+            return;
+        }
+        mDisconnectionCallbackTriggered = true;
+        if (mConnectedSpecificNetworkRequest != null
+                && mConnectedSpecificNetworkRequestSpecifier != null) {
+            sendDisconnectionFailureIfAllowed(
+                    mConnectedSpecificNetworkRequest.getRequestorPackageName(),
+                    mConnectedSpecificNetworkRequestSpecifier, reason, isUserTriggered);
+        }
+    }
+
+    private void sendDisconnectionFailureIfAllowed(String packageName,
+            WifiNetworkSpecifier networkSpecifier, int disconnectReason, boolean isUserTriggered) {
+        RemoteCallbackList<ILocalOnlyDisconnectionStatusListener> listenersTracker =
+                mLocalOnlyDisconnectionStatusListenerPerApp.get(packageName);
+        if (listenersTracker == null || listenersTracker.getRegisteredCallbackCount() == 0) {
+            return;
+        }
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "Sending disconnection reason event to " + packageName);
+        }
+        final int n = listenersTracker.beginBroadcast();
+        for (int i = 0; i < n; i++) {
+            try {
+                listenersTracker.getBroadcastItem(i).onDisconnectionStatus(networkSpecifier,
+                        isUserTriggered, disconnectReason);
+            } catch (RemoteException e) {
+                Log.e(TAG, "sendDisconnectionFailureIfAllowed: remote exception -- " + e);
+            }
+        }
+        listenersTracker.finishBroadcast();
+    }
+
+    /**
+     * Add a listener to get the disconnection of the local-only conncetion
+     */
+    public void addLocalOnlyDisconnectionStatusListener(
+            @NonNull ILocalOnlyDisconnectionStatusListener listener, String packageName) {
+        RemoteCallbackList<ILocalOnlyDisconnectionStatusListener> listenersTracker =
+                mLocalOnlyDisconnectionStatusListenerPerApp.get(packageName);
+        if (listenersTracker == null) {
+            listenersTracker = new RemoteCallbackList<>();
+        }
+        listenersTracker.register(listener);
+        mLocalOnlyDisconnectionStatusListenerPerApp.put(packageName, listenersTracker);
+    }
+
+    /**
+     * Remove a listener which added before
+     */
+    public void removeLocalOnlyDisconnectionStatusListener(
+            @NonNull ILocalOnlyDisconnectionStatusListener listener, String packageName) {
+        RemoteCallbackList<ILocalOnlyDisconnectionStatusListener> listenersTracker =
+                mLocalOnlyDisconnectionStatusListenerPerApp.get(packageName);
+        if (listenersTracker == null || !listenersTracker.unregister(listener)) {
+            Log.w(TAG, "removeLocalOnlyDisconnectionStatusListener: Listener from " + packageName
+                    + " already unregister.");
+        }
+        if (listenersTracker != null && listenersTracker.getRegisteredCallbackCount() == 0) {
+            mLocalOnlyStatusListenerPerApp.remove(packageName);
         }
     }
 

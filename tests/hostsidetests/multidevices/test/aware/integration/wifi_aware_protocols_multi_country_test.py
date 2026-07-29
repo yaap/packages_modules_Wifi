@@ -34,7 +34,7 @@ RUNTIME_PERMISSIONS = (
     'android.permission.ACCESS_COARSE_LOCATION',
     'android.permission.NEARBY_WIFI_DEVICES',
 )
-PACKAGE_NAME = constants.WIFI_AWARE_SNIPPET_PACKAGE_NAME
+PACKAGE_NAME = constants.WIFI_SNIPPET_PACKAGE_NAME
 
 UNSOLICITED_PASSIVE_APIS = [
     'android.net.wifi.aware.PublishConfig.Builder#setPublishType(PublishConfig.PUBLISH_TYPE_UNSOLICITED)',
@@ -66,7 +66,6 @@ class ProtocolsMultiCountryTest(base_test.BaseTestClass):
 
   def setup_class(self):
     # Register two Android devices.
-    logging.basicConfig(level=logging.INFO, force=True)
     self.ads = self.register_controller(android_device, min_number=2)
     if 'wifi_country_code' in self.user_params:
       self.country_code = self.user_params['wifi_country_code']

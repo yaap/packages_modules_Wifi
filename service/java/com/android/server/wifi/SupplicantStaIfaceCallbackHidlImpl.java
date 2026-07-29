@@ -185,8 +185,9 @@ abstract class SupplicantStaIfaceCallbackHidlImpl extends ISupplicantStaIfaceCal
                 mStateBeforeDisconnect = newState;
             }
 
-            if (newState == State.ASSOCIATING || newState == State.ASSOCIATED
-                    || newState == State.COMPLETED) {
+            if (newState == State.AUTHENTICATING || newState == State.ASSOCIATING
+                    || newState == State.ASSOCIATED || newState == State.COMPLETED) {
+                mCurrentSsid = wifiSsid.toString();
                 mStaIfaceHal.updateOnLinkedNetworkRoaming(mIfaceName, id, false);
             }
 
@@ -194,8 +195,6 @@ abstract class SupplicantStaIfaceCallbackHidlImpl extends ISupplicantStaIfaceCal
                 mWifiMonitor.broadcastNetworkConnectionEvent(
                         mIfaceName, mStaIfaceHal.getCurrentNetworkId(mIfaceName), filsHlpSent,
                         wifiSsid, bssidStr);
-            } else if (newState == State.AUTHENTICATING || newState == State.ASSOCIATING) {
-                mCurrentSsid = wifiSsid.toString();
             }
             mWifiMonitor.broadcastSupplicantStateChangeEvent(
                     mIfaceName, mStaIfaceHal.getCurrentNetworkId(mIfaceName), wifiSsid,
@@ -517,6 +516,8 @@ abstract class SupplicantStaIfaceCallbackHidlImpl extends ISupplicantStaIfaceCal
 
     private int halToFrameworkReasonCode(int reason) {
         switch (reason) {
+            case 0:
+                return SupplicantStaIfaceHal.StaIfaceReasonCode.RESERVED;
             case ReasonCode.UNSPECIFIED:
                 return SupplicantStaIfaceHal.StaIfaceReasonCode.UNSPECIFIED;
             case ReasonCode.PREV_AUTH_NOT_VALID:

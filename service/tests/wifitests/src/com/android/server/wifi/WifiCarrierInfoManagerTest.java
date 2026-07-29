@@ -74,6 +74,7 @@ import android.net.wifi.WifiManager;
 import android.net.wifi.WifiStringResourceWrapper;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.hotspot2.pps.Credential;
+import android.net.wifi.util.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelUuid;
@@ -2608,6 +2609,7 @@ public class WifiCarrierInfoManagerTest extends WifiBaseTest {
 
     @Test
     public void testUsingRegisterReceiverForAllUsersWhenFlagEnabled() throws Exception {
+        assumeTrue(Environment.isSdkAtLeastC());
         when(Flags.monitorIntentForAllUsers()).thenReturn(true);
         Looper.prepare();
         mWifiCarrierInfoManager = new WifiCarrierInfoManager(mTelephonyManager,
@@ -2626,7 +2628,7 @@ public class WifiCarrierInfoManagerTest extends WifiBaseTest {
                         CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED)
                         && filter.hasAction(
                                 TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED)),
-                eq(null), any(Handler.class));
+                eq(null), eq(null));
     }
 
 }

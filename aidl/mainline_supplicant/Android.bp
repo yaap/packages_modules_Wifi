@@ -15,7 +15,10 @@
 aidl_interface {
     name: "android.system.wifi.mainline_supplicant",
     unstable: true,
-    imports: ["android.hardware.wifi.supplicant-V5"],
+    imports: [
+        "android.hardware.wifi.supplicant-V5",
+        "android.hardware.wifi.common-V2",
+    ],
     srcs: ["android/system/wifi/mainline_supplicant/*.aidl"],
     backend: {
         java: {
@@ -25,7 +28,7 @@ aidl_interface {
                 "//apex_available:platform",
                 "com.android.wifi",
             ],
-            min_sdk_version: "30",
+            min_sdk_version: "31",
             lint: {
                 // Disable linter to avoid error about fixed size arrays.
                 // Interface will only be accessed on devices >= B.
@@ -39,7 +42,7 @@ aidl_interface {
                 "//apex_available:platform",
                 "com.android.wifi",
             ],
-            min_sdk_version: "30",
+            min_sdk_version: "31",
         },
         cpp: {
             enabled: false,

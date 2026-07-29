@@ -413,6 +413,8 @@ public class XmlUtil {
         public static final String XML_TAG_ALLOW_UPDATE_BY_OTHER_USERS =
                 "AllowedToUpdateByOtherUsers";
         public static final String XML_TAG_CREATOR_USER_ID = "CreatorUserId";
+        public static final String XML_TAG_ALLOWED_AUTO_JOIN_IN_ADVANCED_PROTECTION =
+                "AllowedAutoJoinInAdvancedProtection";
 
         /**
          * Write Wep Keys to the XML stream.
@@ -626,10 +628,15 @@ public class XmlUtil {
             XmlUtil.writeNextValue(out, XML_TAG_IS_REPEATER_ENABLED,
                     configuration.isRepeaterEnabled());
             XmlUtil.writeNextValue(out, XML_TAG_ENABLE_WIFI7, configuration.isWifi7Enabled());
-            if (Environment.isSdkNewerThanB()) {
+            if (Environment.isSdkAtLeastC() && Flags.multiUserWifiEnhancement()) {
                 XmlUtil.writeNextValue(out, XML_TAG_ALLOW_UPDATE_BY_OTHER_USERS,
-                        Flags.multiUserWifiEnhancement()
-                        ? configuration.isAllowedToUpdateByOtherUsers() : true /* default */);
+                        configuration.isAllowedToUpdateByOtherUsers());
+            }
+            if (Environment.isSdkAtLeastC()
+                    && Flags.disableInsecureWifiAutojoinWhenAapmOn()) {
+                writeNextValue(
+                        out, XML_TAG_ALLOWED_AUTO_JOIN_IN_ADVANCED_PROTECTION,
+                        configuration.isAutoJoinInAdvancedProtectionModeEnabled());
             }
             writeSecurityParamsListToXml(out, configuration);
             XmlUtil.writeNextValue(out, XML_TAG_SEND_DHCP_HOSTNAME,
@@ -720,10 +727,11 @@ public class XmlUtil {
             }
             XmlUtil.writeNextValue(out, XML_TAG_PERSISTENT_MAC_RANDOMIZATION_SEED,
                     configuration.persistentMacRandomizationSeed);
-
-            if (Flags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+            if (Environment.isSdkAtLeastC() && Flags.multiUserWifiEnhancement()) {
                 XmlUtil.writeNextValue(out, XML_TAG_CREATOR_USER_ID,
-                        configuration.getStoredCreatorUserId());
+                        configuration.getStoredCreatorUserId() >= 0
+                                ? configuration.getStoredCreatorUserId() :
+                                ActivityManager.getCurrentUser());
             }
         }
 
@@ -894,13 +902,15 @@ public class XmlUtil {
         @SuppressLint("NewApi")
         public static Pair<String, WifiConfiguration> parseFromXml(
                 XmlPullParser in, int outerTagDepth, boolean shouldExpectEncryptedCredentials,
-                @Nullable WifiConfigStoreEncryptionUtil encryptionUtil, boolean fromSuggestion)
+                @Nullable WifiConfigStoreEncryptionUtil encryptionUtil, boolean fromSuggestion,
+                WifiPermissionsUtil wifiPermissionsUtil)
                 throws XmlPullParserException, IOException {
             WifiConfiguration configuration = new WifiConfiguration();
             String configKeyInData = null;
             boolean macRandomizationSettingExists = false;
             boolean sendDhcpHostnameExists = false;
             boolean isCreatorUserIdExists = false;
+            boolean allowedAutoJoinInAdvancedProtectionExists = false;
             byte[] dppConnector = null;
             byte[] dppCSign = null;
             byte[] dppNetAccessKey = null;
@@ -1109,16 +1119,24 @@ public class XmlUtil {
                             configuration.setWifi7Enabled((boolean) value);
                             break;
                         case XML_TAG_ALLOW_UPDATE_BY_OTHER_USERS:
-                            if (Flags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()
+                            if (Environment.isSdkAtLeastC() && Flags.multiUserWifiEnhancement()
                                     && configuration.shared) {
                                 configuration.setAllowedToUpdateByOtherUsers((boolean) value);
                             }
                             break;
                         case XML_TAG_CREATOR_USER_ID:
-                            if (Flags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
+                            if (Environment.isSdkAtLeastC() && Flags.multiUserWifiEnhancement()) {
                                 isCreatorUserIdExists = true;
                                 // Setup current user
                                 configuration.setCreatorUserId((int) value);
+                            }
+                            break;
+                        case XML_TAG_ALLOWED_AUTO_JOIN_IN_ADVANCED_PROTECTION:
+                            allowedAutoJoinInAdvancedProtectionExists = true;
+                            if (Environment.isSdkAtLeastC()
+                                    && Flags.disableInsecureWifiAutojoinWhenAapmOn()) {
+                                configuration.setAutoJoinInAdvancedProtectionModeEnabled(
+                                        (boolean) value);
                             }
                             break;
                         default:
@@ -1200,7 +1218,7 @@ public class XmlUtil {
                         !configuration.isSecurityType(WifiConfiguration.SECURITY_TYPE_OPEN)
                         && !configuration.isSecurityType(WifiConfiguration.SECURITY_TYPE_OWE));
             }
-            if (Flags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()
+            if (Environment.isSdkAtLeastC() && Flags.multiUserWifiEnhancement()
                     && !isCreatorUserIdExists) {
                 int userId = UserHandle.getUserHandleForUid(configuration.creatorUid)
                         .getIdentifier();
@@ -1211,6 +1229,26 @@ public class XmlUtil {
                 configuration.setCreatorUserId(userId);
             }
             configuration.convertLegacyFieldsToSecurityParamsIfNeeded();
+            if (Environment.isSdkAtLeastC()
+                    && Flags.disableInsecureWifiAutojoinWhenAapmOn()) {
+                if (!allowedAutoJoinInAdvancedProtectionExists) {
+                    for (SecurityParams p : configuration.getSecurityParamsList()) {
+                        if (p.isSecurityType(WifiConfiguration.SECURITY_TYPE_OPEN)
+                                || p.isSecurityType(WifiConfiguration.SECURITY_TYPE_WEP)
+                                || p.isSecurityType(WifiConfiguration.SECURITY_TYPE_OWE)) {
+                            boolean isDeviceOwnerProfileOwner =
+                                    wifiPermissionsUtil.isDeviceOwner(
+                                    configuration.creatorUid, configuration.creatorName)
+                                            || wifiPermissionsUtil.isProfileOwner(
+                                            configuration.creatorUid, configuration.creatorName);
+                            if (!isDeviceOwnerProfileOwner) {
+                                configuration.setAutoJoinInAdvancedProtectionModeEnabled(false);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             configuration.setDppConnectionKeys(dppConnector, dppCSign, dppNetAccessKey);
             return Pair.create(configKeyInData, configuration);
         }

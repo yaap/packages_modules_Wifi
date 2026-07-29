@@ -13,10 +13,15 @@
 #  limitations under the License.
 import os
 import logging
+import re
 import time
 
 from mobly import asserts
 from mobly.controllers import android_device
+
+_MAINLINE_MODULE_VERSION_REGEX = re.compile(
+    r'package:(?P<package>[\S]+) versionCode:(?P<version>\d+)'
+)
 
 
 def set_screen_on_and_unlock(ad: android_device.AndroidDevice):
@@ -106,3 +111,37 @@ def capture_hsv_snapshot(
   ) as f:
       print(hierarchy, file=f)
   logging.info('UI hierarchy saved to: %s', hsv_file_name)
+
+
+def get_device_brand(device: android_device.AndroidDevice):
+  """Gets the device brand information from `adb shell getprop`."""
+  return device.adb.getprop('ro.product.brand')
+
+
+def record_wifi_mainline_version(device: android_device.AndroidDevice):
+  """Adds Wi-Fi mainline version to the device info section of test summary."""
+  output = device.adb.shell(
+      [
+          'pm', 'list', 'packages', '--apex-only', '--show-versioncode',
+          'com.google.android.wifi',
+      ]
+  ).decode()
+  match = _MAINLINE_MODULE_VERSION_REGEX.match(output)
+  if match is not None and match.group('version') is not None:
+    version = match.group('version')
+  else:
+    version = ''
+  device.add_device_info('wifi_mainline_version', version)
+
+
+def convert_str_to_bool(value: str | bool) -> bool:
+  """Converts the given arg to bool if it's a string. Otherwise returns as is.
+  """
+  if isinstance(value, str):
+    return value.lower() == 'true'
+  return value
+
+def check_hotspot_device_supports_hotspot(ad: android_device.AndroidDevice):
+    """Checks if the hotspot device supports hotspot, and skips the test if not."""
+    if not ad.wifi.wifiIsPortableHotspotSupported():
+        asserts.skip("Hotspot device does not support hotspot.")

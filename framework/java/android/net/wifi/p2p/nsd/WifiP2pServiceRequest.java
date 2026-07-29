@@ -43,9 +43,9 @@ import java.util.Objects;
  * <p>For the purpose of creating a UPnP or Bonjour service request, use
  * {@link WifiP2pUpnpServiceRequest} or {@link WifiP2pDnsSdServiceRequest} respectively.
  *
- * {@see WifiP2pManager}
- * {@see WifiP2pUpnpServiceRequest}
- * {@see WifiP2pDnsSdServiceRequest}
+ * @see WifiP2pManager
+ * @see WifiP2pUpnpServiceRequest
+ * @see WifiP2pDnsSdServiceRequest
  */
 public class WifiP2pServiceRequest implements Parcelable {
 
@@ -321,10 +321,14 @@ public class WifiP2pServiceRequest implements Parcelable {
          * Not compare transaction id.
          * Transaction id may be changed on each service discovery operation.
          */
+        boolean usdConfigEquals = true;
+        if (Environment.isSdkAtLeastB() && Flags.wifiDirectR2()) {
+            usdConfigEquals = Objects.equals(mUsdServiceConfig, req.mUsdServiceConfig);
+        }
         return mProtocolType == req.mProtocolType
                 && mLength == req.mLength
                 && Objects.equals(mQuery, req.mQuery)
-                && Objects.equals(mUsdServiceConfig, req.mUsdServiceConfig);
+                && usdConfigEquals;
    }
 
     @Override
@@ -333,7 +337,9 @@ public class WifiP2pServiceRequest implements Parcelable {
         result = 31 * result + mProtocolType;
         result = 31 * result + mLength;
         result = 31 * result + (mQuery == null ? 0 : mQuery.hashCode());
-        result = 31 * result + (mUsdServiceConfig == null ? 0 : mUsdServiceConfig.hashCode());
+        if (Environment.isSdkAtLeastB() && Flags.wifiDirectR2()) {
+            result = 31 * result + (mUsdServiceConfig == null ? 0 : mUsdServiceConfig.hashCode());
+        }
         return result;
     }
 

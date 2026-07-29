@@ -20,9 +20,11 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiInfo;
+import android.net.wifi.aware.AwareDataPathRequest;
 import android.net.wifi.aware.PublishConfig;
 import android.net.wifi.aware.SubscribeConfig;
 import android.net.wifi.aware.WifiAwareNetworkSpecifier;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 
@@ -41,6 +43,8 @@ import java.lang.reflect.Type;
  * We need to use Snippet UiAutomator so we have to inherit from its converter.
  */
 public class WifiAwareSnippetConverter extends Converter {
+
+    private static final String TAG = "WifiAwareSnippetConverter";
 
 
     public static String trimQuotationMarks(String originalString) {
@@ -106,6 +110,14 @@ public class WifiAwareSnippetConverter extends Converter {
         JSONObject jsonObject = new JSONObject();
         jsonObject.put("ssid", trimQuotationMarks(wifiInfo.getSSID()));
         jsonObject.put("bssid", wifiInfo.getBSSID());
+        int isPrimaryValue;
+        try {
+            isPrimaryValue = wifiInfo.isPrimary() ? 1 : 0;
+        } catch (SecurityException e) {
+            isPrimaryValue = -1;
+            Log.w(TAG, "No permission to access isPrimary field", e);
+        }
+        jsonObject.put("isPrimary", isPrimaryValue);
         return jsonObject;
     }
 
@@ -146,6 +158,8 @@ public class WifiAwareSnippetConverter extends Converter {
             return WifiAwareJsonDeserializer.jsonToPublishConfig(jsonObject);
         } else if (type == NetworkRequest.class) {
             return WifiAwareJsonDeserializer.jsonToNetworkRequest(jsonObject);
+        } else if (type == AwareDataPathRequest.class) {
+            return  WifiAwareJsonDeserializer.jsonToAwareDataPathRequest(jsonObject);
         }
         // If the type is not recognized, you can throw an exception or return null
         // depending on your application's needs.

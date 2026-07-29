@@ -78,7 +78,6 @@ import android.net.wifi.WifiContext;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiScanner;
-import android.net.wifi.nl80211.DeviceWiphyCapabilities;
 import android.net.wifi.nl80211.NativeWifiClient;
 import android.net.wifi.util.WifiResourceCache;
 import android.os.BatteryManager;
@@ -99,7 +98,8 @@ import com.android.internal.util.StateMachine;
 import com.android.internal.util.WakeupMessage;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.coex.CoexManager;
-import com.android.wifi.flags.Flags;
+import com.android.server.wifi.nl80211.DeviceWiphyCapabilities;
+import com.android.wifi.flags.FeatureFlags;
 import com.android.wifi.resources.R;
 
 import com.google.common.collect.ImmutableList;
@@ -238,6 +238,8 @@ public class SoftApManagerTest extends WifiBaseTest {
     @Mock BatteryManager mBatteryManager;
     @Mock InterfaceConflictManager mInterfaceConflictManager;
     @Mock WifiInjector mWifiInjector;
+    @Mock DeviceConfigFacade mDeviceConfigFacade;
+    @Mock FeatureFlags mFeatureFlags;
     @Mock WifiCountryCode mWifiCountryCode;
     @Mock Clock mClock;
     @Mock LocalLog mLocalLog;
@@ -349,13 +351,14 @@ public class SoftApManagerTest extends WifiBaseTest {
         MockitoAnnotations.initMocks(this);
         mStaticMockSession = mockitoSession()
                 .mockStatic(WifiInjector.class)
-                .mockStatic(Flags.class)
                 .strictness(Strictness.LENIENT)
                 .startMocking();
         mLooper = new TestLooper();
 
         when(WifiInjector.getInstance()).thenReturn(mWifiInjector);
         when(mWifiInjector.getContext()).thenReturn(mContext);
+        when(mWifiInjector.getDeviceConfigFacade()).thenReturn(mDeviceConfigFacade);
+        when(mDeviceConfigFacade.getFeatureFlags()).thenReturn(mFeatureFlags);
         when(mWifiNative.isItPossibleToCreateApIface(any())).thenReturn(true);
         when(mWifiNative.isItPossibleToCreateBridgedApIface(any())).thenReturn(true);
         when(mWifiNative.isApSetMacAddressSupported(any())).thenReturn(true);
@@ -1682,7 +1685,7 @@ public class SoftApManagerTest extends WifiBaseTest {
      */
     @Test
     public void testDoesNotTriggerCallbackForSameClients() throws Exception {
-        when(Flags.softapDisconnectReason()).thenReturn(true);
+        when(mFeatureFlags.softapDisconnectReason()).thenReturn(true);
         SoftApModeConfiguration apConfig =
                 new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
                 mTestSoftApCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
@@ -3334,7 +3337,7 @@ public class SoftApManagerTest extends WifiBaseTest {
     @Test
     public void schedulesTimeoutTimerWorkFlowInBridgedMode() throws Exception {
         assumeTrue(SdkLevel.isAtLeastS());
-        when(Flags.softapDisconnectReason()).thenReturn(true);
+        when(mFeatureFlags.softapDisconnectReason()).thenReturn(true);
         SoftApModeConfiguration apConfig = new SoftApModeConfiguration(
                 WifiManager.IFACE_IP_MODE_TETHERED, generateBridgedModeSoftApConfig(null),
                 mTestSoftApCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
@@ -4351,7 +4354,7 @@ public class SoftApManagerTest extends WifiBaseTest {
     public void testStartSoftApWith11BEConfigurationWhenExistingOther11BeSoftApManager()
             throws Exception {
         assumeTrue(SdkLevel.isAtLeastT());
-        when(Flags.mloSap()).thenReturn(true);
+        when(mFeatureFlags.mloSap()).thenReturn(true);
         when(mResourceCache.getBoolean(R.bool.config_wifiSoftapIeee80211beSupported))
                 .thenReturn(true);
         when(mResourceCache.getBoolean(R.bool.config_wifiSoftApSingleLinkMloInBridgedModeSupported))
@@ -4381,7 +4384,7 @@ public class SoftApManagerTest extends WifiBaseTest {
     public void testStartSoftApWith11BEWhenExistingOther11BeSoftApButDualSingleLinkMLoSupported()
             throws Exception {
         assumeTrue(SdkLevel.isAtLeastT());
-        when(Flags.mloSap()).thenReturn(true);
+        when(mFeatureFlags.mloSap()).thenReturn(true);
         when(mResourceCache.getBoolean(R.bool.config_wifiSoftapIeee80211beSupported))
                 .thenReturn(true);
         when(mResourceCache.getBoolean(R.bool.config_wifiSoftApSingleLinkMloInBridgedModeSupported))
@@ -4409,7 +4412,7 @@ public class SoftApManagerTest extends WifiBaseTest {
     public void testStartSoftApWith11BEForMLOSupportedCase()
             throws Exception {
         assumeTrue(SdkLevel.isAtLeastT());
-        when(Flags.mloSap()).thenReturn(true);
+        when(mFeatureFlags.mloSap()).thenReturn(true);
         when(mResourceCache.getBoolean(R.bool.config_wifiSoftapIeee80211beSupported))
                 .thenReturn(true);
         when(mResourceCache.getInteger(R.integer.config_wifiSoftApMaxNumberMLDSupported))
@@ -4427,7 +4430,7 @@ public class SoftApManagerTest extends WifiBaseTest {
         SoftApModeConfiguration apConfig = new SoftApModeConfiguration(
                 WifiManager.IFACE_IP_MODE_TETHERED, configBuilder.build(),
                 mTestSoftApCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
-        when(Flags.mloSap()).thenReturn(true);
+        when(mFeatureFlags.mloSap()).thenReturn(true);
         startSoftApAndVerifyEnabled(apConfig, configBuilder.build(), false, true);
 
         assertTrue(mSoftApManager.isUsingMlo());
@@ -4560,5 +4563,283 @@ public class SoftApManagerTest extends WifiBaseTest {
                 WifiManager.IFACE_IP_MODE_TETHERED, null,
                 mTestSoftApCapability, "Not " + TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
         startSoftApAndVerifyEnabled(apConfig);
+    }
+
+    @Test
+    public void testStartSoftApAutoUpgradeTo2g6gDbs() throws Exception {
+        when(mFeatureFlags.upgradeSingle6ghzHotspotToDualBand()).thenReturn(true);
+        assumeTrue(SdkLevel.isAtLeastS());
+        when(mResourceCache.getBoolean(
+                R.bool.config_wifiSoftapUpgradeTetheredTo2g6gBridgedIfBandIs6g))
+                .thenReturn(true);
+        int[] dual_bands = {SoftApConfiguration.BAND_2GHZ,
+                SoftApConfiguration.BAND_2GHZ | SoftApConfiguration.BAND_5GHZ
+                        | SoftApConfiguration.BAND_6GHZ};
+
+        mPersistentApConfig = new SoftApConfiguration.Builder(mPersistentApConfig)
+                .setBand(SoftApConfiguration.BAND_6GHZ)
+                .setPassphrase(TEST_PASSWORD, SoftApConfiguration.SECURITY_TYPE_WPA3_SAE)
+                .build();
+        when(mWifiApConfigStore.getApConfiguration()).thenReturn(mPersistentApConfig);
+        SoftApConfiguration dualBandConfig = new SoftApConfiguration.Builder(mPersistentApConfig)
+                .setBands(dual_bands)
+                .build();
+
+        SoftApCapability with6GhzCapability = new SoftApCapability(mTestSoftApCapability);
+        with6GhzCapability.setSupportedChannelList(
+                SoftApConfiguration.BAND_6GHZ, new int[]{5, 21});
+        SoftApModeConfiguration apConfig = new SoftApModeConfiguration(
+                WifiManager.IFACE_IP_MODE_TETHERED, null,
+                with6GhzCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
+        startSoftApAndVerifyEnabled(apConfig, dualBandConfig, false);
+    }
+
+    @Test
+    public void testStartSoftApDoesNotAutoUpgradeTo2g6gDbsWhenFlagDisabled() throws Exception {
+        when(mFeatureFlags.upgradeSingle6ghzHotspotToDualBand()).thenReturn(false);
+        assumeTrue(SdkLevel.isAtLeastS());
+        when(mResourceCache.getBoolean(
+                R.bool.config_wifiSoftapUpgradeTetheredTo2g6gBridgedIfBandIs6g))
+                .thenReturn(true);
+
+        mPersistentApConfig = new SoftApConfiguration.Builder(mPersistentApConfig)
+                .setBand(SoftApConfiguration.BAND_6GHZ)
+                .setPassphrase(TEST_PASSWORD, SoftApConfiguration.SECURITY_TYPE_WPA3_SAE)
+                .build();
+        when(mWifiApConfigStore.getApConfiguration()).thenReturn(mPersistentApConfig);
+
+        SoftApCapability with6GhzCapability = new SoftApCapability(mTestSoftApCapability);
+        with6GhzCapability.setSupportedChannelList(
+                SoftApConfiguration.BAND_6GHZ, new int[]{5, 21});
+        SoftApModeConfiguration apConfig = new SoftApModeConfiguration(
+                WifiManager.IFACE_IP_MODE_TETHERED, null,
+                with6GhzCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
+        // Expect no upgrade, so the config should remain single-band 6GHz.
+        startSoftApAndVerifyEnabled(apConfig, mPersistentApConfig, false);
+    }
+
+    @Test
+    public void testStartSoftApDoesNotAutoUpgradeTo2g6gDbsWhenOverlayIsFalse() throws Exception {
+        when(mFeatureFlags.upgradeSingle6ghzHotspotToDualBand()).thenReturn(true);
+        assumeTrue(SdkLevel.isAtLeastS());
+        when(mResourceCache.getBoolean(
+                R.bool.config_wifiSoftapUpgradeTetheredTo2g6gBridgedIfBandIs6g))
+                .thenReturn(false);
+
+        mPersistentApConfig = new SoftApConfiguration.Builder(mPersistentApConfig)
+                .setBand(SoftApConfiguration.BAND_6GHZ)
+                .setPassphrase(TEST_PASSWORD, SoftApConfiguration.SECURITY_TYPE_WPA3_SAE)
+                .build();
+        when(mWifiApConfigStore.getApConfiguration()).thenReturn(mPersistentApConfig);
+
+        SoftApCapability with6GhzCapability = new SoftApCapability(mTestSoftApCapability);
+        with6GhzCapability.setSupportedChannelList(
+                SoftApConfiguration.BAND_6GHZ, new int[]{5, 21});
+        SoftApModeConfiguration apConfig = new SoftApModeConfiguration(
+                WifiManager.IFACE_IP_MODE_TETHERED, null,
+                with6GhzCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
+        // Expect no upgrade because overlay is false.
+        startSoftApAndVerifyEnabled(apConfig, mPersistentApConfig, false);
+    }
+
+    @Test
+    public void testPollTrafficStats_triggersShutdownWhenIdle() throws Exception {
+        when(mFeatureFlags.softapTrafficMonitor()).thenReturn(true);
+        when(mResourceCache.getInteger(
+                R.integer.config_wifiFrameworkSoftApTrafficStatusIdleIntervalMilliseconds))
+                .thenReturn(40000);
+        when(mResourceCache.getInteger(
+                R.integer.config_wifiFrameworkSoftApIdleTrafficThresholdPackets))
+                .thenReturn(10);
+        // Provide values for 5 polls. The 5th poll will calculate the delta.
+        when(mFrameworkFacade.getTxPackets(TEST_INTERFACE_NAME))
+                .thenReturn(50L, 50L, 50L, 50L, 50L);
+        when(mFrameworkFacade.getRxPackets(TEST_INTERFACE_NAME))
+                .thenReturn(50L, 50L, 50L, 50L, 50L);
+
+        SoftApModeConfiguration apConfig =
+                new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
+                mTestSoftApCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
+        startSoftApAndVerifyEnabled(apConfig);
+        mockSoftApInfoUpdateAndVerifyAfterSapStarted(false, true);
+
+        // a client connects to start polling
+        mockClientConnectedEvent(TEST_CLIENT_MAC_ADDRESS, true, TEST_INTERFACE_NAME, true);
+        mLooper.dispatchNext();
+        mLooper.dispatchNext(); // process the first immediate poll.
+        // ensure polling happened
+        verify(mFrameworkFacade, times(1)).getTxPackets(eq(TEST_INTERFACE_NAME));
+        verify(mFrameworkFacade, times(1)).getRxPackets(eq(TEST_INTERFACE_NAME));
+        // first poll, window not full, should reschedule
+        verify(mWifiNative, never()).teardownInterface(TEST_INTERFACE_NAME);
+
+        // fill the window
+        for (int i = 0; i < 4; i++) {
+            mLooper.moveTimeForward(10000);
+            mLooper.dispatchAll();
+        }
+        verify(mFrameworkFacade, times(5)).getTxPackets(eq(TEST_INTERFACE_NAME));
+        verify(mFrameworkFacade, times(5)).getRxPackets(eq(TEST_INTERFACE_NAME));
+        verify(mWifiNative).teardownInterface(TEST_INTERFACE_NAME);
+    }
+
+    @Test
+    public void testPollTrafficStats_continuesPollingWhenActive() throws Exception {
+        when(mFeatureFlags.softapTrafficMonitor()).thenReturn(true);
+        when(mResourceCache.getInteger(
+                R.integer.config_wifiFrameworkSoftApTrafficStatusIdleIntervalMilliseconds))
+                .thenReturn(40000);
+        when(mResourceCache.getInteger(
+                R.integer.config_wifiFrameworkSoftApIdleTrafficThresholdPackets))
+                .thenReturn(10);
+        // Active traffic over 4 polls + 1 extra to verify it keeps polling
+        when(mFrameworkFacade.getTxPackets(TEST_INTERFACE_NAME))
+                .thenReturn(50L, 100L, 150L, 200L, 250L);
+        when(mFrameworkFacade.getRxPackets(TEST_INTERFACE_NAME))
+                .thenReturn(50L, 100L, 150L, 200L, 250L);
+
+        SoftApModeConfiguration apConfig =
+                new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
+                mTestSoftApCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
+        startSoftApAndVerifyEnabled(apConfig);
+        mockSoftApInfoUpdateAndVerifyAfterSapStarted(false, true);
+
+        // a client connects to start polling
+        mockClientConnectedEvent(TEST_CLIENT_MAC_ADDRESS, true, TEST_INTERFACE_NAME, true);
+        mLooper.dispatchNext();
+        mLooper.dispatchNext(); // process the first immediate poll.
+
+        verify(mFrameworkFacade, times(1)).getTxPackets(eq(TEST_INTERFACE_NAME));
+        verify(mFrameworkFacade, times(1)).getRxPackets(eq(TEST_INTERFACE_NAME));
+        verify(mWifiNative, never()).teardownInterface(TEST_INTERFACE_NAME);
+
+        for (int i = 0; i < 3; i++) {
+            mLooper.moveTimeForward(10000);
+            mLooper.dispatchAll();
+        }
+
+        verify(mFrameworkFacade, times(4)).getTxPackets(eq(TEST_INTERFACE_NAME));
+        verify(mFrameworkFacade, times(4)).getRxPackets(eq(TEST_INTERFACE_NAME));
+        verify(mWifiNative, never()).teardownInterface(TEST_INTERFACE_NAME);
+
+        mLooper.moveTimeForward(10000);
+        assertThat(mLooper.nextMessage().what)
+                .isEqualTo(SoftApManager.SoftApStateMachine.CMD_POLL_PACKETS);
+    }
+
+    @Test
+    public void testPollTrafficStats_stopsPollingWhenLastClientDisconnects() throws Exception {
+        when(mFeatureFlags.softapTrafficMonitor()).thenReturn(true);
+        when(mResourceCache.getInteger(
+                R.integer.config_wifiFrameworkSoftApTrafficStatusIdleIntervalMilliseconds))
+                .thenReturn(40000);
+        when(mResourceCache.getInteger(
+                R.integer.config_wifiFrameworkSoftApIdleTrafficThresholdPackets))
+                .thenReturn(10);
+        when(mFrameworkFacade.getTxPackets(TEST_INTERFACE_NAME)).thenReturn(50L);
+        when(mFrameworkFacade.getRxPackets(TEST_INTERFACE_NAME)).thenReturn(50L);
+
+        SoftApModeConfiguration apConfig =
+                new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
+                mTestSoftApCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
+        startSoftApAndVerifyEnabled(apConfig);
+        mockSoftApInfoUpdateAndVerifyAfterSapStarted(false, true);
+
+        // a client connects to start polling
+        mockClientConnectedEvent(TEST_CLIENT_MAC_ADDRESS, true, TEST_INTERFACE_NAME, true);
+        mLooper.dispatchNext();
+        mLooper.dispatchNext(); // process the first immediate poll.
+
+        verify(mFrameworkFacade, times(1)).getTxPackets(eq(TEST_INTERFACE_NAME));
+        verify(mFrameworkFacade, times(1)).getRxPackets(eq(TEST_INTERFACE_NAME));
+        // First poll, active traffic, should reschedule.
+        verify(mWifiNative, never()).teardownInterface(TEST_INTERFACE_NAME);
+
+        // client disconnects
+        mockClientConnectedEvent(TEST_CLIENT_MAC_ADDRESS, false, TEST_INTERFACE_NAME, true);
+        mLooper.dispatchAll();
+
+        mLooper.moveTimeForward(20000); // well past the polling interval
+        mLooper.dispatchAll();
+
+        // ensure no more polling happened
+        verify(mFrameworkFacade, times(1)).getTxPackets(eq(TEST_INTERFACE_NAME));
+        verify(mFrameworkFacade, times(1)).getRxPackets(eq(TEST_INTERFACE_NAME));
+    }
+
+    @Test
+    public void testPollTrafficStats_doesNotPollWhenFlagDisabled() throws Exception {
+        when(mFeatureFlags.softapTrafficMonitor()).thenReturn(false);
+        when(mResourceCache.getInteger(
+                R.integer.config_wifiFrameworkSoftApTrafficStatusIdleIntervalMilliseconds))
+                .thenReturn(40000);
+
+        SoftApModeConfiguration apConfig =
+                new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
+                mTestSoftApCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
+        startSoftApAndVerifyEnabled(apConfig);
+        mockSoftApInfoUpdateAndVerifyAfterSapStarted(false, true);
+
+        // a client connects, but polling should not start
+        mockClientConnectedEvent(TEST_CLIENT_MAC_ADDRESS, true, TEST_INTERFACE_NAME, true);
+        mLooper.dispatchAll();
+
+        assertThat(mLooper.nextMessage()).isNull();
+        verify(mWifiNative, never()).teardownInterface(TEST_INTERFACE_NAME);
+    }
+
+    @Test
+    public void testPollTrafficStats_doesNotPollWhenIntervalIsBelowMinimum() throws Exception {
+        when(mFeatureFlags.softapTrafficMonitor()).thenReturn(true);
+        when(mResourceCache.getInteger(
+                R.integer.config_wifiFrameworkSoftApTrafficStatusIdleIntervalMilliseconds))
+                .thenReturn(9_999); // < MINIMUM_TRAFFIC_STATUS_IDLE_INTERVAL_MILLISECONDS (10000)
+
+        SoftApModeConfiguration apConfig =
+                new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
+                mTestSoftApCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
+        startSoftApAndVerifyEnabled(apConfig);
+        mockSoftApInfoUpdateAndVerifyAfterSapStarted(false, true);
+
+        // a client connects, but polling should not start
+        mockClientConnectedEvent(TEST_CLIENT_MAC_ADDRESS, true, TEST_INTERFACE_NAME, true);
+        mLooper.dispatchAll();
+
+        // No CMD_POLL_PACKETS should be scheduled
+        verify(mFrameworkFacade, never()).getTxPackets(any());
+    }
+
+    @Test
+    public void testStartSoftApDoesNotAutoUpgradeTo2g6gDbsAndFallsBackWhen6ghzNotAvailable()
+            throws Exception {
+        when(mFeatureFlags.upgradeSingle6ghzHotspotToDualBand()).thenReturn(true);
+        assumeTrue(SdkLevel.isAtLeastS());
+        // Enable both overlays to test fallback behavior.
+        when(mResourceCache.getBoolean(
+                R.bool.config_wifiSoftapUpgradeTetheredTo2g6gBridgedIfBandIs6g))
+                .thenReturn(true);
+        when(mResourceCache.getBoolean(
+                R.bool.config_wifiSoftapUpgradeTetheredTo2g5gBridgedIfBandsAreSubset))
+                .thenReturn(true);
+        int[] dual_bands_2g5g = {SoftApConfiguration.BAND_2GHZ,
+                SoftApConfiguration.BAND_2GHZ | SoftApConfiguration.BAND_5GHZ};
+
+        mPersistentApConfig = new SoftApConfiguration.Builder(mPersistentApConfig)
+                .setBand(SoftApConfiguration.BAND_6GHZ)
+                .setPassphrase(TEST_PASSWORD, SoftApConfiguration.SECURITY_TYPE_WPA3_SAE)
+                .build();
+        when(mWifiApConfigStore.getApConfiguration()).thenReturn(mPersistentApConfig);
+        // Since 6GHz is not available, it should fall back to 2.4+5GHz DBS.
+        SoftApConfiguration expectedFallbackConfig =
+                new SoftApConfiguration.Builder(mPersistentApConfig)
+                        .setBands(dual_bands_2g5g)
+                        .build();
+
+        SoftApCapability no6GhzCapability = new SoftApCapability(mTestSoftApCapability);
+        no6GhzCapability.setSupportedChannelList(WifiScanner.WIFI_BAND_6_GHZ, new int[0]);
+        SoftApModeConfiguration apConfig = new SoftApModeConfiguration(
+                WifiManager.IFACE_IP_MODE_TETHERED, null,
+                no6GhzCapability, TEST_COUNTRY_CODE, TEST_TETHERING_REQUEST);
+        startSoftApAndVerifyEnabled(apConfig, expectedFallbackConfig, false);
     }
 }

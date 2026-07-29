@@ -16,6 +16,12 @@
 
 package com.android.server.wifi.nl80211;
 
+import static android.system.OsConstants.AF_NETLINK;
+import static android.system.OsConstants.SOCK_CLOEXEC;
+import static android.system.OsConstants.SOCK_DGRAM;
+import static android.system.OsConstants.SOCK_NONBLOCK;
+
+import static com.android.net.module.util.netlink.StructNlMsgHdr.NLM_F_ACK;
 import static com.android.server.wifi.nl80211.NetlinkConstants.CTRL_ATTR_FAMILY_ID;
 import static com.android.server.wifi.nl80211.NetlinkConstants.CTRL_ATTR_FAMILY_NAME;
 import static com.android.server.wifi.nl80211.NetlinkConstants.CTRL_ATTR_MCAST_GROUPS;
@@ -25,7 +31,11 @@ import static com.android.server.wifi.nl80211.NetlinkConstants.CTRL_CMD_GETFAMIL
 import static com.android.server.wifi.nl80211.NetlinkConstants.CTRL_CMD_NEWFAMILY;
 import static com.android.server.wifi.nl80211.NetlinkConstants.GENL_ID_CTRL;
 import static com.android.server.wifi.nl80211.NetlinkConstants.NETLINK_GENERIC;
+import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_ATTR_IFINDEX;
 import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_GENL_NAME;
+import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_ATTR_VENDOR_ID;
+import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_ATTR_VENDOR_SUBCMD;
+import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_CMD_VENDOR;
 import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_MULTICAST_GROUP_MLME;
 import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_MULTICAST_GROUP_REG;
 import static com.android.server.wifi.nl80211.NetlinkConstants.NL80211_MULTICAST_GROUP_SCAN;
@@ -36,19 +46,24 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.os.Handler;
 import android.system.ErrnoException;
+import android.system.Os;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.modules.utils.BackgroundThread;
 import com.android.net.module.util.netlink.NetlinkUtils;
 import com.android.net.module.util.netlink.StructNlAttr;
+import com.android.net.module.util.netlink.StructNlMsgErr;
 import com.android.net.module.util.netlink.StructNlMsgHdr;
+import com.android.server.wifi.WifiMetrics;
+import com.android.server.wifi.proto.WifiStatsLog;
 import com.android.wifi.flags.Flags;
 
 import java.io.FileDescriptor;
 import java.io.InterruptedIOException;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -66,6 +81,9 @@ public class Nl80211Proxy {
             NL80211_MULTICAST_GROUP_REG,
             NL80211_MULTICAST_GROUP_MLME};
 
+    private static final long RECEIVE_MESSAGE_TIMEOUT_MS = 4000;
+
+    private WifiMetrics mWifiMetrics;
     private boolean mIsInitialized;
     private FileDescriptor mNetlinkFd;
     private short mNl80211FamilyId;
@@ -79,24 +97,30 @@ public class Nl80211Proxy {
      */
     public interface NetlinkResponseListener {
         /**
-         * Called when responses have been received.
+         * Called when a response has been received.
          *
-         * @param responses List of received responses, or null if an error occurred
+         * @param response Response, or null if an error occurred
          */
-        void onResponse(@Nullable List<GenericNetlinkMsg> responses);
+        void onResponse(@Nullable Nl80211Response response);
     }
 
-    public Nl80211Proxy(Handler wifiHandler) {
+    public Nl80211Proxy(Handler wifiHandler, WifiMetrics wifiMetrics) {
         mWifiHandler = wifiHandler;
+        mWifiMetrics = wifiMetrics;
     }
 
     private int getSequenceNumber() {
         return mSequenceNumber++;
     }
 
-    protected static FileDescriptor createNetlinkFileDescriptor() {
+    protected static FileDescriptor createNetlinkFileDescriptor(boolean nonBlocking) {
         try {
-            FileDescriptor fd = NetlinkUtils.netlinkSocketForProto(NETLINK_GENERIC);
+            int flags = SOCK_DGRAM | SOCK_CLOEXEC;
+            if (nonBlocking) {
+                flags |= SOCK_NONBLOCK;
+            }
+
+            FileDescriptor fd = Os.socket(AF_NETLINK, flags, NETLINK_GENERIC);
             NetlinkUtils.connectToKernel(fd);
             return fd;
         } catch (ErrnoException | SocketException e) {
@@ -107,6 +131,7 @@ public class Nl80211Proxy {
 
     private boolean sendNl80211Message(@NonNull GenericNetlinkMsg message) {
         if (message == null) return false;
+        Log.i(TAG, "Sending Nl80211 message: " + message);
         try {
             byte[] msgBytes = message.toByteArray();
             NetlinkUtils.sendMessage(
@@ -118,52 +143,116 @@ public class Nl80211Proxy {
         }
     }
 
-    private static @Nullable GenericNetlinkMsg parseNl80211MessageFromBuffer(
-            @NonNull ByteBuffer buffer) {
-        if (buffer.remaining() == 0) {
-            return null;
-        }
-        GenericNetlinkMsg message = GenericNetlinkMsg.parse(buffer);
-        if (message == null) {
-            Log.e(TAG, "Unable to parse a received message. bufRemaining=" + buffer.remaining());
-            return null;
-        }
-        return message;
-    }
-
-    private @Nullable List<GenericNetlinkMsg> receiveNl80211Messages() {
+    private @Nullable Nl80211Response receiveNl80211Response(@NonNull GenericNetlinkMsg sent) {
         List<GenericNetlinkMsg> messages = new ArrayList<>();
+        boolean isAck = sent.isFlagEnabled(NLM_F_ACK);
+        if (sent.nlHeader == null) {
+            Log.wtf(TAG, "Sent message has no header!");
+            return null;
+        }
+        int expectedSeq = sent.nlHeader.nlmsg_seq;
+
         try {
-            while (true) {
+            // The response may arrive in several batches, where each batch
+            // can contain several individual messages.
+            boolean isDone = false;
+            while (!isDone) {
+                // Receive a batch of messages into the receive buffer.
                 ByteBuffer recvBuffer =
                         NetlinkUtils.recvMessage(
                                 mNetlinkFd,
                                 NetlinkUtils.DEFAULT_RECV_BUFSIZE,
-                                NetlinkUtils.IO_TIMEOUT_MS);
-                GenericNetlinkMsg message = parseNl80211MessageFromBuffer(recvBuffer);
-                if (message == null) {
-                    Log.e(TAG, "Unable to parse a received message.");
-                    return null;
-                }
-                if (message.nlHeader.nlmsg_type == NLMSG_DONE) {
-                    break;
-                }
-                messages.add(message);
-                if (message.nlHeader.nlmsg_type == NLMSG_ERROR) {
-                    Log.e(TAG, "Received NLMSG_ERROR: " + message);
-                    break;
-                }
-                if ((message.nlHeader.nlmsg_flags & StructNlMsgHdr.NLM_F_MULTI)
-                        != StructNlMsgHdr.NLM_F_MULTI) {
-                    break;
-                }
+                                RECEIVE_MESSAGE_TIMEOUT_MS);
+                // Netlink requires native order
+                recvBuffer.order(ByteOrder.nativeOrder());
 
+                // Parse the individual messages from the batch.
+                while (recvBuffer.remaining() > 0) {
+                    recvBuffer.mark();
+
+                    // Parse the Netlink header to determine the type of message
+                    StructNlMsgHdr nlMsgHdr = StructNlMsgHdr.parse(recvBuffer);
+                    if (nlMsgHdr == null) {
+                        Log.e(TAG, "Unable to parse a received message");
+                        mWifiMetrics.reportNl80211CommandResult(sent,
+                                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__RESPONSE_NLMSG_NULL);
+                        return null;
+                    }
+
+                    // Skip if the sequence number does not match. This may happen if the buffer
+                    // receives a reply after we've already timed out, which is then consumed by the
+                    // next command.
+                    if (nlMsgHdr.nlmsg_seq != expectedSeq) {
+                        Log.e(TAG, "Received a message with a mismatched sequence number. "
+                                + "Expected: " + expectedSeq
+                                + ", got: " + nlMsgHdr.nlmsg_seq + ". Skipping.");
+                        int payloadLength = nlMsgHdr.nlmsg_len - StructNlMsgHdr.STRUCT_SIZE;
+                        if (payloadLength < 0 || payloadLength > recvBuffer.remaining()) {
+                            Log.e(TAG, "Invalid payload length, unable to skip. " + payloadLength);
+                            break;
+                        }
+                        recvBuffer.position(recvBuffer.position() + payloadLength);
+                        continue;
+                    }
+
+                    // Error should terminate the response and return the error code.
+                    if (nlMsgHdr.nlmsg_type == NLMSG_ERROR) {
+                        mWifiMetrics.reportNl80211CommandResult(sent,
+                                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__RESPONSE_NLMSG_ERROR);
+                        StructNlMsgErr errMsg = StructNlMsgErr.parse(recvBuffer);
+                        if (errMsg == null) {
+                            Log.e(TAG, "Failed to parse error message");
+                            return null;
+                        }
+                        // Netlink returns errors as negative numbers, so we must reverse the sign
+                        // to match with positive POSIX error codes.
+                        int posixError = -errMsg.error;
+                        Log.i(TAG, "Received NLMSG_ERROR with error " + posixError
+                                + " for message " + sent);
+                        if (!isAck && posixError == 0) {
+                            Log.wtf(TAG, "Received unexpected NLMSG_ERROR ACK");
+                            return null;
+                        }
+                        return new Nl80211Response(posixError);
+                    }
+
+                    // Done should terminate the response.
+                    if (nlMsgHdr.nlmsg_type == NLMSG_DONE) {
+                        Log.i(TAG, "Received NLMSG_DONE for message " + sent);
+                        mWifiMetrics.reportNl80211CommandResult(sent,
+                                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__RESPONSE_NLMSG_DONE);
+                        isDone = true;
+                        break;
+                    }
+
+                    // Not a control message -- try to parse as Generic Netlink.
+                    recvBuffer.reset(); // Reset so GenericNetlinkMsg can parse the Netlink header.
+                    GenericNetlinkMsg message = GenericNetlinkMsg.parse(recvBuffer);
+                    if (message == null) {
+                        Log.e(TAG, "Unable to parse a received message for " + sent);
+                        mWifiMetrics.reportNl80211CommandResult(sent,
+                                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__RESPONSE_NLMSG_NULL);
+                        return null;
+                    }
+                    messages.add(message);
+
+                    // Exit early if we aren't expecting multiple responses.
+                    if (!message.isFlagEnabled(StructNlMsgHdr.NLM_F_MULTI)) {
+                        Log.i(TAG, "Multi flag is not set");
+                        mWifiMetrics.reportNl80211CommandResult(sent,
+                                WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__RESPONSE_DONE_NO_MULTI);
+                        isDone = true;
+                        break;
+                    }
+                }
             }
         } catch (ErrnoException | IllegalArgumentException | InterruptedIOException e) {
-            Log.i(TAG, "Unable to receive Nl80211 messages. " + e);
+            mWifiMetrics.reportNl80211CommandResult(sent,
+                    WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__RESPONSE_NLMSG_EXCEPTION);
+            Log.i(TAG, "Unable to receive Nl80211 messages. ", e);
             return null;
         }
-        return messages;
+        return new Nl80211Response(messages.toArray(new GenericNetlinkMsg[0]));
     }
 
     /**
@@ -180,7 +269,7 @@ public class Nl80211Proxy {
             Log.i(TAG, "Instance is already initialized");
             return true;
         }
-        mNetlinkFd = createNetlinkFileDescriptor();
+        mNetlinkFd = createNetlinkFileDescriptor(/* nonBlocking */ false);
         if (mNetlinkFd == null) return false;
         if (!retrieveNl80211FamilyInfo()) return false;
 
@@ -204,44 +293,31 @@ public class Nl80211Proxy {
     }
 
     /**
-     * Send a GenericNetlinkMsg and receive several responses.
+     * Send a GenericNetlinkMsg and receive the response.
      *
      * @param message Netlink message to be sent.
-     * @return List of response messages, or null if an error occurred.
+     * @return Nl80211Response, or null if there was an error sending or receiving the response.
      */
-    public @Nullable List<GenericNetlinkMsg> sendMessageAndReceiveResponses(
+    public @Nullable Nl80211Response sendMessageAndReceiveResponse(
             @NonNull GenericNetlinkMsg message) {
         if (mNetlinkFd == null) {
+            mWifiMetrics.reportNl80211CommandResult(message,
+                    WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__SEND_FD_UNAVAILABLE);
             Log.e(TAG, "Netlink file descriptor is not available");
             return null;
         }
         if (message == null) {
+            mWifiMetrics.reportNl80211CommandResult(message,
+                    WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__SEND_NLMSG_NULL);
             Log.e(TAG, "Unable to send a null message");
             return null;
         }
         if (!sendNl80211Message(message)) {
+            mWifiMetrics.reportNl80211CommandResult(message,
+                    WifiStatsLog.WIFI_NL80211_COMMAND_RESULT_REPORTED__REASON_CODE__SEND_NLMSG_FAILED);
             return null;
         }
-        return receiveNl80211Messages();
-    }
-
-    /**
-     * Send a GenericNetlinkMsg and receive a single response.
-     *
-     * @param message Netlink message to be sent.
-     * @return Response message, or null if an error occurred.
-     */
-    public @Nullable GenericNetlinkMsg sendMessageAndReceiveResponse(
-            @NonNull GenericNetlinkMsg message) {
-        List<GenericNetlinkMsg> responses = sendMessageAndReceiveResponses(message);
-        if (responses == null) {
-            return null;
-        }
-        if (responses.size() != 1) {
-            Log.e(TAG, "Received " + responses.size() + " responses, but was expecting one");
-            return null;
-        }
-        return responses.get(0);
+        return receiveNl80211Response(message);
     }
 
     /**
@@ -266,8 +342,8 @@ public class Nl80211Proxy {
             return false;
         }
         mWifiHandler.post(() -> {
-            List<GenericNetlinkMsg> responses = sendMessageAndReceiveResponses(request);
-            executor.execute(() -> listener.onResponse(responses));
+            Nl80211Response response = sendMessageAndReceiveResponse(request);
+            executor.execute(() -> listener.onResponse(response));
         });
         return true;
     }
@@ -283,14 +359,19 @@ public class Nl80211Proxy {
                 getSequenceNumber());
         request.addAttribute(new StructNlAttr(CTRL_ATTR_FAMILY_NAME, NL80211_GENL_NAME));
 
-        GenericNetlinkMsg response = sendMessageAndReceiveResponse(request);
-        if (response == null || !response.verifyFields(CTRL_CMD_NEWFAMILY,
-                CTRL_ATTR_FAMILY_ID, CTRL_ATTR_MCAST_GROUPS)) {
+        Nl80211Response response = sendMessageAndReceiveResponse(request);
+        if (response == null || response.isError() || response.getMessage() == null) {
+            Log.e(TAG, "Failed to send CTRL_CMD_GETFAMILY");
+            return false;
+        }
+
+        GenericNetlinkMsg msg = response.getMessage();
+        if (!msg.verifyFields(CTRL_CMD_NEWFAMILY, CTRL_ATTR_FAMILY_ID, CTRL_ATTR_MCAST_GROUPS)) {
             Log.e(TAG, "Unable to request family information");
             return false;
         }
 
-        Short familyId = response.getAttributeValueAsShort(CTRL_ATTR_FAMILY_ID);
+        Short familyId = msg.getAttributeValueAsShort(CTRL_ATTR_FAMILY_ID);
         if (familyId == null) {
             Log.e(TAG, "Unable to retrieve the Nl80211 family id");
             return false;
@@ -298,7 +379,7 @@ public class Nl80211Proxy {
         mNl80211FamilyId = familyId;
 
         Map<String, Integer> multicastGroups =
-                parseMulticastGroupsAttribute(response.getAttribute(CTRL_ATTR_MCAST_GROUPS));
+                parseMulticastGroupsAttribute(msg.getAttribute(CTRL_ATTR_MCAST_GROUPS));
         for (String groupName : sRequiredMulticastGroups) {
             if (!multicastGroups.containsKey(groupName)) {
                 Log.e(TAG, "Missing required multicast group. Retrieved=" + multicastGroups);
@@ -391,34 +472,79 @@ public class Nl80211Proxy {
 
 
     /**
-     * Register a callback to trigger when the specified broadcast event type is received.
+     * Register a callback to trigger when the specified broadcast event command is received.
      *
-     * @param type Type of broadcast event on which to trigger the callback.
+     * @param command Type of broadcast command on which to trigger the callback.
      * @param callback Callback object that should be called.
      */
     public boolean registerBroadcastCallback(
-            short type, @NonNull Nl80211BroadcastMonitor.Nl80211BroadcastCallback callback) {
+            short command, @NonNull Nl80211BroadcastMonitor.Nl80211BroadcastCallback callback) {
         if (!mIsInitialized || mBroadcastMonitor == null) {
             Log.e(TAG, "Unable to register broadcast callback before initialization");
             return false;
         }
-        mBroadcastMonitor.registerBroadcastCallback(type, callback);
+        mBroadcastMonitor.registerBroadcastCallback(command, callback);
         return true;
     }
 
     /**
      * Unregister a broadcast event callback that was previously registered.
      *
-     * @param type Type of broadcast event which the callback is associated with.
+     * @param command Type of broadcast command which the callback is associated with.
      * @param callback Callback object which was registered.
      */
     public boolean unregisterBroadcastCallback(
-            short type, @NonNull Nl80211BroadcastMonitor.Nl80211BroadcastCallback callback) {
+            short command, @NonNull Nl80211BroadcastMonitor.Nl80211BroadcastCallback callback) {
         if (!mIsInitialized || mBroadcastMonitor == null) {
             Log.e(TAG, "Unable to unregister broadcast callback before initialization");
             return false;
         }
-        mBroadcastMonitor.unregisterBroadcastCallback(type, callback);
+        mBroadcastMonitor.unregisterBroadcastCallback(command, callback);
         return true;
+    }
+
+    /**
+     * Creates a vendor-specific Nl80211 request with the given vendor ID and subcommand.
+     *
+     * @param ifIndex The interface index
+     * @param vendorId The vendor-specific ID (NL80211_ATTR_VENDOR_ID).
+     * @param subcmd The vendor-specific subcommand (NL80211_ATTR_VENDOR_SUBCMD).
+     * @param additionalAttributes Optional additional attributes to include in the vendor message.
+     * @return The constructed GenericNetlinkMsg, or null if the proxy is not initialized
+     * or the request creation fails.
+     */
+    public @Nullable GenericNetlinkMsg createVendorRequest(
+            int ifIndex, int vendorId, int subcmd, StructNlAttr... additionalAttributes) {
+        if (!mIsInitialized) {
+            Log.e(TAG, "Instance has not been initialized");
+            return null;
+        }
+
+        ByteBuffer ifIndexBuffer = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+        ifIndexBuffer.putInt(ifIndex);
+        StructNlAttr ifIndexAttr = new StructNlAttr(
+                     NL80211_ATTR_IFINDEX, ifIndexBuffer.array());
+
+        ByteBuffer vendorIdBuffer = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+        vendorIdBuffer.putInt(vendorId);
+        StructNlAttr vendorIdAttr = new StructNlAttr(
+                     NL80211_ATTR_VENDOR_ID, vendorIdBuffer.array());
+
+        ByteBuffer subcmdBuffer = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+        subcmdBuffer.putInt(subcmd);
+        StructNlAttr subcmdAttr = new StructNlAttr(
+                     NL80211_ATTR_VENDOR_SUBCMD, subcmdBuffer.array());
+
+        List<StructNlAttr> attributes = new ArrayList<>();
+        attributes.add(ifIndexAttr);
+        attributes.add(vendorIdAttr);
+        attributes.add(subcmdAttr);
+
+        for (StructNlAttr attr : additionalAttributes) {
+            attributes.add(attr);
+        }
+
+        return createNl80211Request(NL80211_CMD_VENDOR,
+                attributes.toArray(new StructNlAttr[0]));
     }
 }

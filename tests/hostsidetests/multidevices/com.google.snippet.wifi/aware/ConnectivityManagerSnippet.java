@@ -21,6 +21,7 @@ import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
+import android.net.RouteInfo;
 import android.net.TransportInfo;
 import android.net.wifi.aware.WifiAwareChannelInfo;
 import android.net.wifi.aware.WifiAwareNetworkInfo;
@@ -44,6 +45,7 @@ import java.io.OutputStream;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -212,8 +214,9 @@ public class ConnectivityManagerSnippet implements Snippet {
             return null;
         }
 
-        if (iface == null)
+        if (iface == null) {
             return null;
+        }
         return iface.getInetAddresses();
     }
 
@@ -270,6 +273,63 @@ public class ConnectivityManagerSnippet implements Snippet {
             }
         }
         return inetAddrs;
+    }
+
+
+    /**
+     * Gets the LinkProperties for the currently active default network.
+     *
+     * <p>This method retrieves the network that the system currently considers its default
+     * route for internet traffic and returns its associated link properties, which include
+     * IP addresses, DNS servers, routes, and the interface name.
+     *
+     * @return A {@link LinkProperties} object for the active network, or {@code null} if there
+     *         is no active network connection.
+     */
+    @Rpc(description = "Returns active link properties")
+    public LinkProperties connectivityGetActiveLinkProperties() {
+        // Get the current default network.
+        Network activeNetwork = mConnectivityManager.getActiveNetwork();
+        if (activeNetwork == null) {
+            // No active network, so no properties to return.
+            return null;
+        }
+        // Get the LinkProperties for that specific network.
+        return mConnectivityManager.getLinkProperties(activeNetwork);
+    }
+
+    /**
+     * Gets the IPv4 default gateway address for the active network.
+     *
+     * <p>This method inspects the routes within the active network's {@link LinkProperties}
+     * to find the default route (destination 0.0.0.0/0) and returns its gateway address.
+     *
+     * @return A string representation of the IPv4 default gateway address (e.g., "192.168.1.1"),
+     *         or {@code null} if no active network or IPv4 default gateway is found.
+     */
+    @Rpc(description = "Return default gateway of the "
+            + "active network")
+    public String connectivityGetIPv4DefaultGateway() {
+        // First, get the LinkProperties for the active network.
+        LinkProperties linkProp = connectivityGetActiveLinkProperties();
+        if (linkProp == null) {
+            // If there are no link properties, there's no gateway.
+            return null;
+        }
+
+        List<RouteInfo> routeInfos = linkProp.getRoutes();
+        for (RouteInfo routeInfo: routeInfos) {
+            // Check if the route is a default route and has a gateway.
+            if (routeInfo.isDefaultRoute() && routeInfo.getGateway() instanceof Inet4Address) {
+                Inet4Address gateway = (Inet4Address) routeInfo.getGateway();
+                Log.d(
+                        "Found IPv4 default gateway: " + gateway.getHostAddress());
+                return gateway.getHostAddress();
+            }
+        }
+        Log.w("No IPv4 default gateway found in "
+                + "LinkProperties.");
+        return null;
     }
 
     /**
@@ -637,7 +697,8 @@ public class ConnectivityManagerSnippet implements Snippet {
         NetworkCallback callback = mNetworkCallBacks.get(sessionId);
         if (callback == null) {
             throw new ConnectivityManagerSnippetException("Network callback is not created.Please "
-                + "call connectivityRequestNetwork() first.");
+                + "call connectivityRequestNetwork()/connectivityRegisterNetworkCallback() to get "
+                + "the network callback first.");
         }
         return callback;
     }
@@ -763,5 +824,39 @@ public class ConnectivityManagerSnippet implements Snippet {
     @Rpc(description = "Check if tethering supported or not.True if tethering is supported.")
     public boolean connectivityIsTetheringSupported() {
         return mConnectivityManager.isTetheringSupported();
+    }
+
+   /**
+    * Check if the given network has Internet access.
+    *
+    * @param sessionId A unique ID corresponding to a registered NetworkCallback session, used to
+    *     retrieve the bound Network object.
+    * @param host The target host, which accepts IP address or a domain name.
+    * @param port The port number on the host to connect to.
+    * @param timeoutMs The maximum time in milliseconds to wait for the connection to succeed.
+    * @return {@code true} if a connection is successfully established.
+    * @throws ConnectivityManagerSnippetException if the NetworkCallback is not found.
+    */
+    @Rpc(description = "Check if the given network has Internet access.")
+    public boolean checkInternetAccess(String sessionId, String host, int port, int timeoutMs)
+            throws ConnectivityManagerSnippetException {
+
+        Network network = getNetWorkCallbackBySessionId(sessionId).mNetWork;
+
+        if (network == null) {
+            Log.e("Network object is null for session: " + sessionId);
+            return false;
+        }
+
+        try (Socket socket = network.getSocketFactory().createSocket()) {
+            if (socket == null) {
+                return false;
+            }
+            socket.connect(new InetSocketAddress(host, port), timeoutMs);
+            return true;
+        } catch (Exception e) {
+            Log.e("CheckInternetAccess: Hit an error during network check", e);
+            return false;
+        }
     }
 }

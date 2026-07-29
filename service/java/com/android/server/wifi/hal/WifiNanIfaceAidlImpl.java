@@ -176,12 +176,11 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
     }
 
     /**
-     * See comments for {@link IWifiNanIface#enableAndConfigure(short, ConfigRequest, boolean,
-     * boolean, boolean, boolean, int, int, int, WifiNanIface.PowerParameters)}
+     * See comments for {@link IWifiNanIface#enableAndConfigure(short, ConfigRequest, boolean, boolean, boolean, int, int, int, WifiNanIface.PowerParameters)}
      */
     @Override
     public boolean enableAndConfigure(short transactionId, ConfigRequest configRequest,
-            boolean notifyIdentityChange, boolean initialConfiguration, boolean rangingEnabled,
+            boolean initialConfiguration, boolean rangingEnabled,
             boolean isInstantCommunicationEnabled, int instantModeChannel, int clusterId,
             int macAddressRandomizationIntervalSec, WifiNanIface.PowerParameters powerParameters) {
         final String methodStr = "enableAndConfigure";
@@ -191,12 +190,12 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
                     rangingEnabled, isInstantCommunicationEnabled, instantModeChannel, clusterId);
             if (initialConfiguration) {
                 NanEnableRequest req = createNanEnableRequest(
-                        configRequest, notifyIdentityChange, supplemental,
+                        configRequest, supplemental,
                         macAddressRandomizationIntervalSec, powerParameters);
                 mWifiNanIface.enableRequest((char) transactionId, req, supplemental);
             } else {
                 NanConfigRequest req = createNanConfigRequest(
-                        configRequest, notifyIdentityChange, supplemental,
+                        configRequest, supplemental,
                         macAddressRandomizationIntervalSec, powerParameters);
                 mWifiNanIface.configRequest((char) transactionId, req, supplemental);
             }
@@ -234,13 +233,13 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
      */
     @Override
     public boolean publish(short transactionId, byte publishId, PublishConfig publishConfig,
-            byte[] nanIdentityKey) {
+            byte[] nanIdentityKey, byte[] sdeaHeader) {
         final String methodStr = "publish";
         synchronized (mLock) {
             try {
                 if (!checkIfaceAndLogFailure(methodStr)) return false;
                 NanPublishRequest req = createNanPublishRequest(publishId, publishConfig,
-                        nanIdentityKey);
+                        nanIdentityKey, sdeaHeader);
                 mWifiNanIface.startPublishRequest((char) transactionId, req);
                 return true;
             } catch (RemoteException e) {
@@ -257,14 +256,13 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
      */
     @Override
     public boolean subscribe(short transactionId, byte subscribeId,
-            SubscribeConfig subscribeConfig,
-            byte[] nanIdentityKey) {
+            SubscribeConfig subscribeConfig, byte[] nanIdentityKey, byte[] sdeaHeader) {
         final String methodStr = "subscribe";
         synchronized (mLock) {
             try {
                 if (!checkIfaceAndLogFailure(methodStr)) return false;
                 NanSubscribeRequest req = createNanSubscribeRequest(subscribeId, subscribeConfig,
-                        nanIdentityKey);
+                        nanIdentityKey, sdeaHeader);
                 mWifiNanIface.startSubscribeRequest((char) transactionId, req);
                 return true;
             } catch (RemoteException e) {
@@ -281,13 +279,13 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
      */
     @Override
     public boolean sendMessage(short transactionId, byte pubSubId, int requesterInstanceId,
-            MacAddress dest, byte[] message) {
+            MacAddress dest, byte[] message, byte[] sdeaHeader) {
         final String methodStr = "sendMessage";
         synchronized (mLock) {
             try {
                 if (!checkIfaceAndLogFailure(methodStr)) return false;
                 NanTransmitFollowupRequest req = createNanTransmitFollowupRequest(
-                        pubSubId, requesterInstanceId, dest, message);
+                        pubSubId, requesterInstanceId, dest, message, sdeaHeader);
                 mWifiNanIface.transmitFollowupRequest((char) transactionId, req);
                 return true;
             } catch (RemoteException e) {
@@ -415,7 +413,7 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
     public boolean respondToDataPathRequest(short transactionId, boolean accept, int ndpId,
             String interfaceName, byte[] appInfo, boolean isOutOfBand, Capabilities capabilities,
             WifiAwareDataPathSecurityConfig securityConfig, byte pubSubId,
-        boolean frameProtectionEnabled) {
+            boolean frameProtectionEnabled, byte[] peerMac, byte[] ndiInitMac) {
         final String methodStr = "respondToDataPathRequest";
         synchronized (mLock) {
             try {
@@ -423,7 +421,8 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
                 NanRespondToDataPathIndicationRequest req =
                         createNanRespondToDataPathIndicationRequest(
                                 accept, ndpId, interfaceName, appInfo, isOutOfBand,
-                                securityConfig, pubSubId, frameProtectionEnabled);
+                                securityConfig, pubSubId, frameProtectionEnabled, peerMac,
+                                ndiInitMac);
                 mWifiNanIface.respondToDataPathIndicationRequest((char) transactionId, req);
                 return true;
             } catch (RemoteException e) {
@@ -518,10 +517,11 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
 
     @Override
     public boolean initiateNanBootstrappingRequest(short transactionId, int peerId, MacAddress peer,
-            int method, byte[] cookie, byte pubSubId, boolean isComeBack) {
+            int method, byte[] cookie, byte pubSubId, boolean isComeBack, byte[] ssi,
+            byte[] sdeaHeader) {
         String methodStr = "initiateNanBootstrappingRequest";
         NanBootstrappingRequest request = createNanBootstrappingRequest(peerId, peer, method,
-                cookie, pubSubId, isComeBack);
+                cookie, pubSubId, isComeBack, ssi, sdeaHeader);
         synchronized (mLock) {
             try {
                 if (!checkIfaceAndLogFailure(methodStr)) return false;
@@ -604,7 +604,8 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
     }
 
     private static NanBootstrappingRequest createNanBootstrappingRequest(int peerId,
-            MacAddress peer, int method, byte[] cookie, byte pubSubId, boolean isComeBack) {
+            MacAddress peer, int method, byte[] cookie, byte pubSubId, boolean isComeBack,
+            byte[] ssi, byte[] sdeaHeader) {
         NanBootstrappingRequest request = new NanBootstrappingRequest();
         request.peerId = peerId;
         request.peerDiscMacAddr = peer.toByteArray();
@@ -612,6 +613,11 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
         request.cookie = copyArray(cookie);
         request.discoverySessionId = pubSubId;
         request.isComeback = isComeBack;
+        if (ssi != null) {
+            request.serviceSpecificInfo = joinByteArrays(sdeaHeader, ssi);
+        } else {
+            request.serviceSpecificInfo = new byte[0];
+        }
         return request;
     }
 
@@ -680,7 +686,7 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
     }
 
     private static NanEnableRequest createNanEnableRequest(
-            ConfigRequest configRequest, boolean notifyIdentityChange,
+            ConfigRequest configRequest,
             NanConfigRequestSupplemental configSupplemental,
             int macAddressRandomizationIntervalSec, WifiNanIface.PowerParameters powerParameters) {
         NanEnableRequest req = new NanEnableRequest();
@@ -694,9 +700,9 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
         req.hopCountMax = 2;
         req.configParams = new NanConfigRequest();
         req.configParams.masterPref = (byte) configRequest.mMasterPreference;
-        req.configParams.disableDiscoveryAddressChangeIndication = !notifyIdentityChange;
-        req.configParams.disableStartedClusterIndication = !notifyIdentityChange;
-        req.configParams.disableJoinedClusterIndication = !notifyIdentityChange;
+        req.configParams.disableDiscoveryAddressChangeIndication = false;
+        req.configParams.disableStartedClusterIndication = false;
+        req.configParams.disableJoinedClusterIndication = false;
         req.configParams.includePublishServiceIdsInBeacon = true;
         req.configParams.numberOfPublishServiceIdsInBeacon = 0;
         req.configParams.includeSubscribeServiceIdsInBeacon = true;
@@ -743,7 +749,7 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
     }
 
     private static NanConfigRequest createNanConfigRequest(
-            ConfigRequest configRequest, boolean notifyIdentityChange,
+            ConfigRequest configRequest,
             NanConfigRequestSupplemental configSupplemental,
             int macAddressRandomizationIntervalSec, WifiNanIface.PowerParameters powerParameters) {
         NanConfigRequest req = new NanConfigRequest();
@@ -751,9 +757,9 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
                 createNanBandSpecificConfigs(configRequest);
 
         req.masterPref = (byte) configRequest.mMasterPreference;
-        req.disableDiscoveryAddressChangeIndication = !notifyIdentityChange;
-        req.disableStartedClusterIndication = !notifyIdentityChange;
-        req.disableJoinedClusterIndication = !notifyIdentityChange;
+        req.disableDiscoveryAddressChangeIndication = false;
+        req.disableStartedClusterIndication = false;
+        req.disableJoinedClusterIndication = false;
         req.includePublishServiceIdsInBeacon = true;
         req.numberOfPublishServiceIdsInBeacon = 0;
         req.includeSubscribeServiceIdsInBeacon = true;
@@ -808,7 +814,7 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
     }
 
     private static NanPublishRequest createNanPublishRequest(
-            byte publishId, PublishConfig publishConfig, byte[] nik) {
+            byte publishId, PublishConfig publishConfig, byte[] nik, byte[] sdeaHeader) {
         NanPublishRequest req = new NanPublishRequest();
         req.baseConfigs = new NanDiscoveryCommonConfig();
         req.baseConfigs.sessionId = publishId;
@@ -820,7 +826,7 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
         if (publishConfig.mServiceSpecificInfo != null
                 && publishConfig.mServiceSpecificInfo.length > 255) {
             req.baseConfigs.extendedServiceSpecificInfo =
-                    copyArray(publishConfig.mServiceSpecificInfo);
+                    joinByteArrays(sdeaHeader, publishConfig.mServiceSpecificInfo);
             req.baseConfigs.serviceSpecificInfo = new byte[0];
         } else {
             req.baseConfigs.serviceSpecificInfo = copyArray(publishConfig.mServiceSpecificInfo);
@@ -879,6 +885,11 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
             req.baseConfigs.securityConfig.cipherType = getHalCipherSuites(
                     publishConfig.getPairingConfig().getSupportedCipherSuites());
             enableFrameProtection(req.baseConfigs.securityConfig);
+            if (publishConfig.mServiceSpecificInfo != null) {
+                // For pairing, we always use extendedServiceSpecificInfo.
+                req.baseConfigs.extendedServiceSpecificInfo =
+                        joinByteArrays(sdeaHeader, publishConfig.mServiceSpecificInfo);
+            }
         }
         req.identityKey = copyArray(nik, 16);
 
@@ -891,7 +902,7 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
     }
 
     private static NanSubscribeRequest createNanSubscribeRequest(
-            byte subscribeId, SubscribeConfig subscribeConfig, byte[] nik) {
+            byte subscribeId, SubscribeConfig subscribeConfig, byte[] nik, byte[] sdeaHeader) {
         NanSubscribeRequest req = new NanSubscribeRequest();
         req.baseConfigs = new NanDiscoveryCommonConfig();
         req.baseConfigs.sessionId = subscribeId;
@@ -902,8 +913,8 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
         req.baseConfigs.discoveryMatchIndicator = NanMatchAlg.MATCH_ONCE;
         if (subscribeConfig.mServiceSpecificInfo != null
                 && subscribeConfig.mServiceSpecificInfo.length > 255) {
-            req.baseConfigs.extendedServiceSpecificInfo =
-                    copyArray(subscribeConfig.mServiceSpecificInfo);
+            req.baseConfigs.extendedServiceSpecificInfo = joinByteArrays(sdeaHeader,
+                    subscribeConfig.mServiceSpecificInfo);
             req.baseConfigs.serviceSpecificInfo = new byte[0];
         } else {
             req.baseConfigs.serviceSpecificInfo = copyArray(subscribeConfig.mServiceSpecificInfo);
@@ -923,17 +934,17 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
         req.baseConfigs.disableFollowupReceivedIndication = false;
 
         req.baseConfigs.rangingRequired =
-                subscribeConfig.mMinDistanceMmSet || subscribeConfig.mMaxDistanceMmSet
+                subscribeConfig.mEgressDistanceMmSet || subscribeConfig.mIngressDistanceMmSet
                         || subscribeConfig.mPeriodicRangingEnabled;
         req.baseConfigs.configRangingIndications = 0;
-        if (subscribeConfig.mMinDistanceMmSet) {
+        if (subscribeConfig.mEgressDistanceMmSet) {
             req.baseConfigs.distanceEgressCm = (char) Math.min(
-                    subscribeConfig.mMinDistanceMm / 10, Short.MAX_VALUE);
+                    subscribeConfig.mEgressDistanceMm / 10, Short.MAX_VALUE);
             req.baseConfigs.configRangingIndications |= NanRangingIndication.EGRESS_MET_MASK;
         }
-        if (subscribeConfig.mMaxDistanceMmSet) {
+        if (subscribeConfig.mIngressDistanceMmSet) {
             req.baseConfigs.distanceIngressCm = (char) Math.min(
-                    subscribeConfig.mMaxDistanceMm / 10, Short.MAX_VALUE);
+                    subscribeConfig.mIngressDistanceMm / 10, Short.MAX_VALUE);
             req.baseConfigs.configRangingIndications |= NanRangingIndication.INGRESS_MET_MASK;
         }
 
@@ -953,6 +964,11 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
             req.baseConfigs.securityConfig.cipherType = getHalCipherSuites(
                     subscribeConfig.getPairingConfig().getSupportedCipherSuites());
             enableFrameProtection(req.baseConfigs.securityConfig);
+            if (subscribeConfig.mServiceSpecificInfo != null) {
+                // For pairing, we always use extendedServiceSpecificInfo.
+                req.baseConfigs.extendedServiceSpecificInfo = joinByteArrays(sdeaHeader,
+                        subscribeConfig.mServiceSpecificInfo);
+            }
         }
         req.identityKey = copyArray(nik, 16);
         req.intfAddr = new android.hardware.wifi.MacAddress[0];
@@ -994,7 +1010,8 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
     }
 
     private static NanTransmitFollowupRequest createNanTransmitFollowupRequest(
-            byte pubSubId, int requesterInstanceId, MacAddress dest, byte[] message) {
+            byte pubSubId, int requesterInstanceId, MacAddress dest, byte[] message,
+            byte[] sdeaHeader) {
         NanTransmitFollowupRequest req = new NanTransmitFollowupRequest();
         req.discoverySessionId = pubSubId;
         req.peerId = requesterInstanceId;
@@ -1002,7 +1019,7 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
         req.isHighPriority = false;
         req.shouldUseDiscoveryWindow = true;
         if (message != null && message.length > 255) {
-            req.extendedServiceSpecificInfo = copyArray(message);
+            req.extendedServiceSpecificInfo = joinByteArrays(sdeaHeader, message);
             req.serviceSpecificInfo = new byte[0];
         } else {
             req.serviceSpecificInfo = copyArray(message);
@@ -1123,7 +1140,7 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
             createNanRespondToDataPathIndicationRequest(boolean accept, int ndpId,
             String interfaceName, byte[] appInfo, boolean isOutOfBand,
             WifiAwareDataPathSecurityConfig securityConfig, byte pubSubId,
-            boolean frameProtectionEnabled) {
+            boolean frameProtectionEnabled, byte[] peerMac, byte[] ndiInitMac) {
         NanRespondToDataPathIndicationRequest req = new NanRespondToDataPathIndicationRequest();
         req.acceptRequest = accept;
         req.ndpInstanceId = ndpId;
@@ -1213,5 +1230,17 @@ public class WifiNanIfaceAidlImpl implements IWifiNanIface {
         securityConfig.requiresEnhancedFrameProtection = true;
         securityConfig.supportBigtksa = true;
         securityConfig.supportGtkAndIgtk = true;
+    }
+
+    private static byte[] joinByteArrays(byte[] array1, byte[] array2) {
+        if (array1 == null) {
+            return copyArray(array2);
+        }
+        if (array2 == null) {
+            return copyArray(array1);
+        }
+        byte[] result= new byte[array1.length+ array2.length];System.arraycopy(array1, 0, result, 0,
+        array1.length);System.arraycopy(array2, 0, result, array1.length, array2.length);
+        return result;
     }
 }

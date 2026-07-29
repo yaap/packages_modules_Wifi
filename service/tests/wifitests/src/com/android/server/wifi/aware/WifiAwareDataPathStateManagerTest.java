@@ -20,6 +20,7 @@ import static android.net.wifi.ScanResult.CHANNEL_WIDTH_80MHZ;
 import static android.net.wifi.aware.Characteristics.WIFI_AWARE_CIPHER_SUITE_NCS_SK_128;
 import static android.system.OsConstants.NETLINK_ROUTE;
 
+import static com.android.server.wifi.proto.WifiStatsLog.WIFI_AWARE_PEER_FOUND_REPORTED__RESULT__PEER_FOUND;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.staticMockMarker;
 
 import static org.hamcrest.core.IsEqual.equalTo;
@@ -27,6 +28,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -69,6 +71,7 @@ import android.net.wifi.aware.DiscoverySessionCallback;
 import android.net.wifi.aware.IWifiAwareDiscoverySessionCallback;
 import android.net.wifi.aware.IWifiAwareEventCallback;
 import android.net.wifi.aware.IWifiAwareManager;
+import android.net.wifi.aware.IdentityChangedListener;
 import android.net.wifi.aware.PeerHandle;
 import android.net.wifi.aware.PublishConfig;
 import android.net.wifi.aware.PublishDiscoverySession;
@@ -146,6 +149,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
     private static final String TEST_PACKAGE_NAME = "com.android.somePackage";
     private static final String TEST_FEATURE_ID = "com.android.someFeature";
     private static final int MAX_NDP_SESSION = 8;
+    private static final byte[] CLUSTER_ID = MacAddress.fromString("50:6F:9A:01:00:00")
+            .toByteArray();
 
     private static final WifiAwareChannelInfo AWARE_CHANNEL_INFO =
             new WifiAwareChannelInfo(5750, CHANNEL_WIDTH_80MHZ, 2);
@@ -220,6 +225,9 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         mResources.setBoolean(R.bool.config_wifiAwareNdpSecurityUpdateOnSameNdi, false);
         mResources.setInteger(R.integer.config_wifiConfigurationWifiRunnerThresholdInMs, 4000);
         when(mMockContext.getResources()).thenReturn(mResources);
+        if (SdkLevel.isAtLeastU()) {
+            when(mMockContext.createDeviceContext(anyInt())).thenReturn(mMockContext);
+        }
 
         when(mInterfaceConflictManager.manageInterfaceConflictForStateMachine(any(), any(), any(),
                 any(), any(), eq(HalDeviceManager.HDM_CREATE_IFACE_NAN), any(), anyBoolean()))
@@ -418,12 +426,13 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         inOrderM.verify(mAwareMetricsMock, never()).recordNdpRequestType(anyInt());
 
         // (2) provide a request
-        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null);
+        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null, null);
         mMockLooper.dispatchAll();
 
-        // (3) reject the request
-        verify(mMockNative).respondToDataPathRequest(anyShort(), eq(false), anyInt(),
-                anyString(), any(), anyBoolean(), any(), any(), eq((byte) 0), eq(false));
+        // (3) Will not reject the request
+        verify(mMockNative, never()).respondToDataPathRequest(anyShort(), eq(false), anyInt(),
+                anyString(), any(), anyBoolean(), any(), any(), eq((byte) 0), eq(false), any(),
+                any());
     }
 
     /**
@@ -457,12 +466,13 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         inOrderM.verify(mAwareMetricsMock, never()).recordNdpRequestType(anyInt());
 
         // (2) provide a request
-        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null);
+        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null, null);
         mMockLooper.dispatchAll();
 
-        // (3) reject the request
-        verify(mMockNative).respondToDataPathRequest(anyShort(), eq(false), anyInt(),
-                anyString(), any(), anyBoolean(), any(), any(), eq((byte) 0), eq(false));
+        // (3) Will not reject the request
+        verify(mMockNative, never()).respondToDataPathRequest(anyShort(), eq(false), anyInt(),
+                anyString(), any(), anyBoolean(), any(), any(), eq((byte) 0), eq(false), any(),
+                any());
     }
 
     /**
@@ -508,16 +518,13 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         mMockLooper.dispatchAll();
 
         // (3) have responder receive request
-        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null);
+        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null, null);
         mMockLooper.dispatchAll();
 
-        // (4) verify that responder aborts (i.e. refuses request)
-        inOrder.verify(mMockNative).respondToDataPathRequest(transactionId.capture(), eq(false),
-                eq(ndpId), eq(""), eq(null), eq(false), any(), any(), eq((byte) 0), eq(false));
-        mDut.onRespondToDataPathSetupRequestResponse(transactionId.getValue(), true, 0);
-        mMockLooper.dispatchAll();
-        assertFalse(mAlarmManager
-                .isPending(WifiAwareStateManager.HAL_DATA_PATH_CONFIRM_TIMEOUT_TAG));
+        // (4) verify that responder does not respond to request
+        inOrder.verify(mMockNative, never())
+                .respondToDataPathRequest(transactionId.capture(), eq(false), eq(ndpId), eq(""),
+                        eq(null), eq(false), any(), any(), anyByte(), eq(false), any(), any());
 
         verifyRequestDeclaredUnfullfillable(nr);
         verify(mAwareMetricsMock, atLeastOnce()).reportAwareInstantModeEnabled(anyBoolean());
@@ -605,7 +612,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
 
             // (2) get confirmation
             mDut.onDataPathConfirmNotification(ndpId + i, peerDataPathMac, true, 0,
-                    buildTlv(port, transportProtocol, true), List.of(AWARE_CHANNEL_INFO));
+                    buildTlv(port, transportProtocol, true), List.of(AWARE_CHANNEL_INFO)
+            );
             mMockLooper.dispatchAll();
             if (first) {
                 inOrder.verify(mMockNetdWrapper).setInterfaceUp(anyString());
@@ -645,7 +653,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                 assertEquals(++expectAvailableNdp, awareResources.getAvailableDataPathsCount());
             }
 
-            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId + i));
+            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId + i),
+                    isNotNull(), any(), anyString());
 
             mDut.onEndDataPathResponse(transactionId.getValue(), true, 0);
             mDut.onDataPathEndNotification(ndpId + i);
@@ -745,10 +754,11 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         // (6.5) provide a (semi) bogus NDP Requst Indication - mostly bogus on Initiator but
         // may contain the peer's TLVs (in this case it does)
         mDut.onDataPathRequestNotification(0, allZeros, ndpId,
-                buildTlv(port, transportProtocol, true));
+                buildTlv(port, transportProtocol, true), null);
 
         // (7) confirm the NDP creation
-        mDut.onDataPathConfirmNotification(ndpId, peerDataPathMac, true, 0, null, null);
+        mDut.onDataPathConfirmNotification(ndpId, peerDataPathMac, true, 0, null, null
+        );
         mMockLooper.dispatchAll();
 
         inOrder.verify(mMockNetdWrapper).setInterfaceUp(anyString());
@@ -809,7 +819,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
             awareResources = validateCorrectAwareResourcesChangeBroadcast(inOrder);
             assertEquals(++expectedAvailableNdps, awareResources.getAvailableDataPathsCount());
         }
-        inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId));
+        inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId), isNotNull(),
+                any(), anyString());
 
         mDut.onEndDataPathResponse(transactionId.getValue(), true, 0);
         mDut.onDataPathEndNotification(ndpId);
@@ -878,7 +889,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                 interfaces.add(ifNameCaptor.getValue());
 
                 mDut.onInitiateDataPathResponseSuccess(transactionId.getValue(), ndpId + i);
-                mDut.onDataPathConfirmNotification(ndpId + i, peerDataPathMac, true, 0, null, null);
+                mDut.onDataPathConfirmNotification(ndpId + i, peerDataPathMac, true, 0, null, null
+                );
                 mMockLooper.dispatchAll();
                 if (SdkLevel.isAtLeastT()) {
                     awareResources = validateCorrectAwareResourcesChangeBroadcast(inOrder);
@@ -969,7 +981,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
             interfaces.add(ifNameCaptor.getValue());
 
             mDut.onInitiateDataPathResponseSuccess(transactionId.getValue(), ndpId + i);
-            mDut.onDataPathConfirmNotification(ndpId + i, peerDataPathMac, true, 0, null, null);
+            mDut.onDataPathConfirmNotification(ndpId + i, peerDataPathMac, true, 0, null, null
+            );
             mMockLooper.dispatchAll();
             if (SdkLevel.isAtLeastT()) {
                 awareResources = validateCorrectAwareResourcesChangeBroadcast(inOrder);
@@ -1066,7 +1079,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                 interfaces.add(ifNameCaptor.getValue());
 
                 mDut.onInitiateDataPathResponseSuccess(transactionId.getValue(), ndpId + i);
-                mDut.onDataPathConfirmNotification(ndpId + i, peerDataPathMac, true, 0, null, null);
+                mDut.onDataPathConfirmNotification(ndpId + i, peerDataPathMac, true, 0, null, null
+                );
                 mMockLooper.dispatchAll();
 
                 if (SdkLevel.isAtLeastT()) {
@@ -1165,7 +1179,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
             interfaces.add(ifNameCaptor.getValue());
 
             mDut.onInitiateDataPathResponseSuccess(transactionId.getValue(), ndpId + i);
-            mDut.onDataPathConfirmNotification(ndpId + i, peerDataPathMac, true, 0, null, null);
+            mDut.onDataPathConfirmNotification(ndpId + i, peerDataPathMac, true, 0, null, null
+            );
             mMockLooper.dispatchAll();
             if (SdkLevel.isAtLeastT()) {
                 awareResources = validateCorrectAwareResourcesChangeBroadcast(inOrder);
@@ -1234,6 +1249,77 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
     @Test
     public void testDataPathInitiatorMacPmkSuccess() throws Exception {
         testDataPathInitiatorUtility(false, true, true, false, true, false);
+    }
+
+    /**
+     * Validate that if the network specifier index mismatches, the data path is ended.
+     */
+    @Test
+    public void testDataPathInitiateSuccessIndexMismatch() throws Exception {
+        final int clientId = 123;
+        final byte pubSubId = 58;
+        final int requestorId = 1341234;
+        final int ndpId = 2;
+        final byte[] pmk = "01234567890123456789012345678901".getBytes();
+        final String passphrase = "some passphrase";
+        final byte[] peerDiscoveryMac = HexEncoding.decode("000102030405".toCharArray(), false);
+
+        ArgumentCaptor<Short> transactionId = ArgumentCaptor.forClass(Short.class);
+        InOrder inOrder = inOrder(mMockNative, mMockCm, mMockCallback, mMockSessionCallback);
+        InOrder inOrderM = inOrder(mAwareMetricsMock);
+
+        // (0) initialize
+        DataPathEndPointInfo res = initDataPathEndPoint(true, clientId, pubSubId, requestorId,
+                peerDiscoveryMac, inOrder, inOrderM, false);
+
+        // (1) Request 1 (Dummy to bump index)
+        NetworkRequest nr1 = getSessionNetworkRequest(clientId, res.mSessionId, res.mPeerHandle,
+                pmk, passphrase, false, 0);
+        Message reqNetworkMsg1 = Message.obtain();
+        reqNetworkMsg1.what = NetworkProvider.CMD_REQUEST_NETWORK;
+        reqNetworkMsg1.obj = nr1;
+        reqNetworkMsg1.arg1 = 0;
+        res.mMessenger.send(reqNetworkMsg1);
+        mMockLooper.dispatchAll();
+        inOrderM.verify(mAwareMetricsMock).recordNdpRequestType(anyInt());
+        inOrder.verify(mMockNative).initiateDataPath(transactionId.capture(), anyInt(), anyInt(),
+                anyInt(), any(), any(), anyBoolean(), any(), any(), any(), anyByte(), anyBoolean());
+
+        // Cancel Request 1
+        Message endNetworkReqMsg = Message.obtain();
+        endNetworkReqMsg.what = NetworkFactory.CMD_CANCEL_REQUEST;
+        endNetworkReqMsg.obj = nr1;
+        res.mMessenger.send(endNetworkReqMsg);
+        mMockLooper.dispatchAll();
+
+        // (2) Request 2 (Target, will have index 1)
+        NetworkRequest nr2 = getSessionNetworkRequest(clientId, res.mSessionId, res.mPeerHandle,
+                pmk, passphrase, false, 1);
+        Message reqNetworkMsg2 = Message.obtain();
+        reqNetworkMsg2.what = NetworkProvider.CMD_REQUEST_NETWORK;
+        reqNetworkMsg2.obj = nr2;
+        reqNetworkMsg2.arg1 = 0;
+        res.mMessenger.send(reqNetworkMsg2);
+        mMockLooper.dispatchAll();
+        inOrderM.verify(mAwareMetricsMock).recordNdpRequestType(anyInt());
+
+        // (3) Call onDataPathInitiateSuccess with the wrong index
+        mDut.onInitiateDataPathResponseSuccess(transactionId.getValue(), ndpId);
+        mMockLooper.dispatchAll();
+
+        // (4) Verify the second request is processed
+        inOrder.verify(mMockNative).initiateDataPath(transactionId.capture(), anyInt(), anyInt(),
+                anyInt(), any(), any(), anyBoolean(), any(), any(), any(), anyByte(), anyBoolean());
+
+        // (5) Data path request sent completely
+        mDut.onInitiateDataPathResponseSuccess(transactionId.getValue(), ndpId + 1);
+        mMockLooper.dispatchAll();
+
+        // (6) Verify the first request is ended
+        verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId), isNotNull(), any(),
+                anyString());
+        mDut.onEndDataPathResponse(transactionId.getValue(), true, 0);
+        mMockLooper.dispatchAll();
     }
 
     /**
@@ -1578,12 +1664,12 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         //   Initiator (subscribe): doesn't initiate (i.e. no HAL requests)
         verifyRequestDeclaredUnfullfillable(nr);
         if (doPublish) {
-            // (2) get request & respond
-            mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null);
+            // (2) get request & never respond
+            mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null, null);
             mMockLooper.dispatchAll();
-            inOrder.verify(mMockNative).respondToDataPathRequest(anyShort(), eq(false),
+            inOrder.verify(mMockNative, never()).respondToDataPathRequest(anyShort(), eq(false),
                     eq(ndpId), eq(""), eq(null), anyBoolean(), any(), any(), eq((byte) 0),
-                eq(false));
+                    eq(false), any(), any());
         }
         verify(mAwareMetricsMock, atLeastOnce()).reportAwareInstantModeEnabled(anyBoolean());
         verifyNoMoreInteractions(mMockNative, mAwareMetricsMock, mMockNetdWrapper);
@@ -1642,12 +1728,12 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         //   Initiator (subscribe): doesn't initiate (i.e. no HAL requests)
         verifyRequestDeclaredUnfullfillable(nr);
         if (doPublish) {
-            // (2) get request & respond
-            mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null);
+            // (2) get request & never respond
+            mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null, null);
             mMockLooper.dispatchAll();
-            inOrder.verify(mMockNative).respondToDataPathRequest(anyShort(), eq(false),
+            inOrder.verify(mMockNative, never()).respondToDataPathRequest(anyShort(), eq(false),
                     eq(ndpId), eq(""), eq(null), anyBoolean(), any(), any(), eq((byte) 0),
-                eq(false));
+                    eq(false), any(), any());
         }
         verify(mAwareMetricsMock, atLeastOnce()).reportAwareInstantModeEnabled(anyBoolean());
         verifyNoMoreInteractions(mMockNative, mAwareMetricsMock, mMockNetdWrapper);
@@ -1705,12 +1791,12 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         //   Initiator (subscribe): doesn't initiate (i.e. no HAL requests)
         verifyRequestDeclaredUnfullfillable(nr);
         if (doPublish) {
-            // (2) get request & respond
-            mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null);
+            // (2) get request & never respond
+            mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null, null);
             mMockLooper.dispatchAll();
-            inOrder.verify(mMockNative).respondToDataPathRequest(anyShort(), eq(false),
+            inOrder.verify(mMockNative, never()).respondToDataPathRequest(anyShort(), eq(false),
                     eq(ndpId), eq(""), eq(null), anyBoolean(), any(), any(), eq((byte) 0),
-                eq(false));
+                    eq(false), any(), any());
         }
         verify(mAwareMetricsMock, atLeastOnce()).reportAwareInstantModeEnabled(anyBoolean());
         verifyNoMoreInteractions(mMockNative, mAwareMetricsMock, mMockNetdWrapper);
@@ -1827,7 +1913,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
             }
             when(mClock.getElapsedSinceBootMillis()).thenReturn(0L);
 
-            mDut.onDataPathConfirmNotification(ndpId, peerDataPathMac, true, 0, peerToken, null);
+            mDut.onDataPathConfirmNotification(ndpId, peerDataPathMac, true, 0, peerToken, null
+            );
             mMockLooper.dispatchAll();
             inOrder.verify(mMockNetdWrapper).setInterfaceUp(anyString());
             inOrder.verify(mMockNetdWrapper).enableIpv6(anyString());
@@ -1868,11 +1955,12 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                     assertEquals(++expectedAvailableNdps,
                             awareResources.getAvailableDataPathsCount());
                 }
-                inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId));
+                inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId),
+                        isNotNull(), any(), anyString());
                 mDut.onEndDataPathResponse(transactionId.getValue(), true, 0);
             } else {
                 inOrderStatic.verify(() -> NetlinkUtils.sendOneShotKernelMessage(eq(NETLINK_ROUTE),
-                        isNotNull()));
+                        isNotNull(), eq(NetlinkUtils.IO_TIMEOUT_MS)));
                 inOrder.verify(mMockNetworkInterface).setConnected(agentCaptor.capture());
                 networkAgent = agentCaptor.getValue();
                 inOrderM.verify(mAwareMetricsMock).recordNdpStatus(eq(NanStatusCode.SUCCESS),
@@ -1899,7 +1987,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                 awareResources = validateCorrectAwareResourcesChangeBroadcast(inOrder);
                 assertEquals(++expectedAvailableNdps, awareResources.getAvailableDataPathsCount());
             }
-            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId));
+            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId), isNotNull(),
+                    any(), anyString());
             mDut.onEndDataPathResponse(transactionId.getValue(), true, 0);
             mMockLooper.dispatchAll();
             inOrderM.verify(mAwareMetricsMock).recordNdpStatus(eq(NanStatusCode.INTERNAL_FAILURE),
@@ -1919,7 +2008,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                 awareResources = validateCorrectAwareResourcesChangeBroadcast(inOrder);
                 assertEquals(++expectedAvailableNdps, awareResources.getAvailableDataPathsCount());
             }
-            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId));
+            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId), isNotNull(),
+                    any(), anyString());
             mDut.onEndDataPathResponse(transactionId.getValue(), true, 0);
             mDut.onDataPathEndNotification(ndpId);
             mMockLooper.dispatchAll();
@@ -1985,12 +2075,12 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         inOrderM.verify(mAwareMetricsMock).recordNdpRequestType(anyInt());
 
         // (2) get request & respond (if legacy)
-        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null);
+        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null, peerDataPathMac);
         mMockLooper.dispatchAll();
         inOrder.verify(mMockNative).respondToDataPathRequest(transactionId.capture(), eq(true),
-                eq(ndpId), eq(sAwareInterfacePrefix + "0"),
-                eq(null), eq(useDirect), any(), any(), eq(useDirect ? (byte) 0 : pubSubId),
-            eq(false));
+                    eq(ndpId), eq(sAwareInterfacePrefix + "0"),
+                    eq(null), eq(useDirect), any(), any(),
+                    eq(useDirect ? (byte) 0 : pubSubId), eq(false), eq(peerDiscoveryMac), eq(peerDataPathMac));
         mDut.onRespondToDataPathSetupRequestResponse(transactionId.getValue(), true, 0);
         mMockLooper.dispatchAll();
         assertTrue(mAlarmManager
@@ -1999,10 +2089,14 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
             awareResources = validateCorrectAwareResourcesChangeBroadcast(inOrder);
             assertEquals(--expectedAvailableNdps, awareResources.getAvailableDataPathsCount());
         }
+        verify(mAwareMetricsMock, atLeastOnce()).updatePeerFoundResult(eq(clientId),
+                eq(res.mSessionId),
+                eq(WIFI_AWARE_PEER_FOUND_REPORTED__RESULT__PEER_FOUND), eq(0), any());
 
         // (3) get confirmation OR timeout
         if (getConfirmation) {
-            mDut.onDataPathConfirmNotification(ndpId, peerDataPathMac, true, 0, null, null);
+            mDut.onDataPathConfirmNotification(ndpId, peerDataPathMac, true, 0, null, null
+            );
             mMockLooper.dispatchAll();
             inOrder.verify(mMockNetdWrapper).setInterfaceUp(anyString());
             inOrder.verify(mMockNetdWrapper).enableIpv6(anyString());
@@ -2029,7 +2123,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                 awareResources = validateCorrectAwareResourcesChangeBroadcast(inOrder);
                 assertEquals(++expectedAvailableNdps, awareResources.getAvailableDataPathsCount());
             }
-            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId));
+            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId), isNotNull(),
+                    any(), anyString());
             mDut.onEndDataPathResponse(transactionId.getValue(), true, 0);
             mMockLooper.dispatchAll();
             inOrderM.verify(mAwareMetricsMock).recordNdpStatus(eq(NanStatusCode.INTERNAL_FAILURE),
@@ -2049,7 +2144,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                 awareResources = validateCorrectAwareResourcesChangeBroadcast(inOrder);
                 assertEquals(++expectedAvailableNdps, awareResources.getAvailableDataPathsCount());
             }
-            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId));
+            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId), isNotNull(),
+                    any(), anyString());
 
             mDut.onEndDataPathResponse(transactionId.getValue(), true, 0);
             mDut.onDataPathEndNotification(ndpId);
@@ -2077,7 +2173,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
             throws Exception {
         final IWifiAwareManager mockAwareService = mock(IWifiAwareManager.class);
         final WifiAwareManager mgr = new WifiAwareManager(mMockContext, mockAwareService);
-        final ConfigRequest configRequest = new ConfigRequest.Builder().build();
+        final ConfigRequest configRequest = new ConfigRequest.Builder().setMasterPreference(5)
+                .build();
         final PublishConfig publishConfig = new PublishConfig.Builder().build();
         final SubscribeConfig subscribeConfig = new SubscribeConfig.Builder().build();
 
@@ -2166,7 +2263,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
             byte[] pmk, String passphrase, int requestId, int port, int transportProtocol)
             throws Exception {
         final IWifiAwareManager mockAwareService = mock(IWifiAwareManager.class);
-        final ConfigRequest configRequest = new ConfigRequest.Builder().build();
+        final ConfigRequest configRequest = new ConfigRequest.Builder().setMasterPreference(5)
+                .build();
         final WifiAwareManager mgr = new WifiAwareManager(mMockContext, mockAwareService);
 
         ArgumentCaptor<WifiAwareSession> sessionCaptor = ArgumentCaptor.forClass(
@@ -2243,12 +2341,16 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         inOrderM.verify(mAwareMetricsMock).recordDiscoverySession(eq(Process.myUid()), any());
         inOrderM.verify(mAwareMetricsMock).recordDiscoveryStatus(Process.myUid(),
                 NanStatusCode.SUCCESS, doPublish, sessionId.getValue(), 6, TEST_FEATURE_ID);
+        inOrderM.verify(mAwareMetricsMock).recordPeerFoundStart(clientId, doPublish);
 
         mDut.onMessageReceivedNotification(pubSubId, requestorId, peerDiscoveryMac,
                 someMsg.getBytes());
         mMockLooper.dispatchAll();
         inOrder.verify(mMockSessionCallback).onMessageReceived(peerIdCaptor.capture(),
                 eq(someMsg.getBytes()));
+        verify(mAwareMetricsMock, atLeastOnce()).updatePeerFoundResult(eq(clientId),
+                eq(sessionId.getValue()),
+                eq(WIFI_AWARE_PEER_FOUND_REPORTED__RESULT__PEER_FOUND), eq(0), any());
 
         return new DataPathEndPointInfo(sessionId.getValue(), peerIdCaptor.getValue(),
                 isFirstIteration ? messenger : null);
@@ -2258,7 +2360,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
             int maxNdiInterfaces, int clientId, InOrder inOrder, InOrder inOrderM)
             throws Exception {
         final int pid = 2000;
-        final ConfigRequest configRequest = new ConfigRequest.Builder().build();
+        final ConfigRequest configRequest = new ConfigRequest.Builder().setMasterPreference(5)
+                .build();
 
         ArgumentCaptor<Short> transactionId = ArgumentCaptor.forClass(Short.class);
         ArgumentCaptor<Messenger> messengerCaptor = ArgumentCaptor.forClass(Messenger.class);
@@ -2290,15 +2393,18 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
 
         if (startUpSequence) {
             inOrder.verify(mMockNative).enableAndConfigure(transactionId.capture(),
-                    eq(configRequest), eq(false), eq(true), eq(true),
+                    eq(configRequest), eq(true), eq(true),
                     eq(false), eq(false), eq(false), anyInt(), anyInt());
             mDut.onConfigSuccessResponse(transactionId.getValue());
+            mMockLooper.dispatchAll();
+            mDut.onClusterChangeNotification(IdentityChangedListener.CLUSTER_CHANGE_EVENT_STARTED,
+                    CLUSTER_ID);
             mMockLooper.dispatchAll();
         }
 
         inOrder.verify(mMockCallback).onConnectSuccess(clientId);
         inOrderM.verify(mAwareMetricsMock).recordAttachSession(eq(Process.myUid()), eq(false),
-                any(),  eq(6), eq(TEST_FEATURE_ID));
+                any(),  eq(6), eq(TEST_FEATURE_ID), eq(clientId));
 
         if (startUpSequence) {
             inOrder.verify(mMockNative).getCapabilities(transactionId.capture());
@@ -2491,20 +2597,24 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         for (int i = 0; i < ndpAttemptsCount; i++) {
             // (2) get request & respond
             peerDataPathMac[5] += i;
-            mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null);
+            mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null, null);
             mMockLooper.dispatchAll();
             inOrder.verify(mMockNative).respondToDataPathRequest(transactionId.capture(), eq(true),
-                    eq(ndpId), eq(sAwareInterfacePrefix + "0"),
-                    eq(null), eq(false), any(), any(), eq(pubSubId), eq(false));
+                    eq(ndpId), eq(sAwareInterfacePrefix + "0"), eq(null), eq(false), any(), any(),
+                    eq(pubSubId), eq(false), any(), any());
             mDut.onRespondToDataPathSetupRequestResponse(transactionId.getValue(), true, 0);
             mMockLooper.dispatchAll();
+            verify(mAwareMetricsMock, atLeastOnce()).updatePeerFoundResult(eq(clientId),
+                        eq(res.mSessionId),
+                        eq(WIFI_AWARE_PEER_FOUND_REPORTED__RESULT__PEER_FOUND), eq(0), any());
             assertTrue(mAlarmManager
                     .isPending(WifiAwareStateManager.HAL_DATA_PATH_CONFIRM_TIMEOUT_TAG));
 
             // (3) get confirmation OR timeout
             if (i != indexOfFailure) {
                 successNdpIds.add(ndpId);
-                mDut.onDataPathConfirmNotification(ndpId, peerDataPathMac, true, 0, null, null);
+                mDut.onDataPathConfirmNotification(ndpId, peerDataPathMac, true, 0, null, null
+                );
                 mMockLooper.dispatchAll();
                 if (firstSuccess) {
                     inOrder.verify(mMockNetdWrapper).setInterfaceUp(anyString());
@@ -2531,7 +2641,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                 assertTrue(mAlarmManager.dispatch(
                         WifiAwareStateManager.HAL_DATA_PATH_CONFIRM_TIMEOUT_TAG));
                 mMockLooper.dispatchAll();
-                inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId));
+                inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(ndpId),
+                        isNotNull(), any(), anyString());
                 inOrderM.verify(mAwareMetricsMock).recordNdpStatus(
                         eq(NanStatusCode.INTERNAL_FAILURE), eq(false), anyInt(), anyLong(),
                         anyInt());
@@ -2561,7 +2672,8 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
             mDut.onEndDataPathResponse(transactionId.getValue(), true, 0);
             mDut.onDataPathEndNotification(successNdpId);
             mMockLooper.dispatchAll();
-            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(successNdpId));
+            inOrder.verify(mMockNative).endDataPath(transactionId.capture(), eq(successNdpId),
+                    isNotNull(), any(), anyString());
             inOrderM.verify(mAwareMetricsMock).recordNdpSessionDuration(anyLong());
         }
         inOrder.verify(mMockNetdWrapper).setInterfaceDown(anyString());
@@ -2646,13 +2758,13 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         mDut.onInitiateDataPathResponseSuccess(transactionId.getValue(), ndpId);
 
         // (5) provide a request from peer
-        mDut.onDataPathRequestNotification(pubId, peerDiscoveryMac, ndpId2, null);
+        mDut.onDataPathRequestNotification(pubId, peerDiscoveryMac, ndpId2, null, null);
         mMockLooper.dispatchAll();
 
         // (6) make sure framework respond with the right accepts any peer request.
         verify(mMockNative).respondToDataPathRequest(anyShort(), eq(true), eq(ndpId2),
-                interfaceName2.capture(), any(), anyBoolean(), any(),
-                any(), eq(pubId), eq(false));
+                interfaceName2.capture(), any(), anyBoolean(), any(), any(), eq(pubId), eq(false),
+                any(), any());
 
         assertNotEquals(interfaceName1.getValue(), interfaceName2.getValue());
     }
@@ -2712,26 +2824,26 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         inOrderM.verify(mAwareMetricsMock).recordNdpRequestType(anyInt());
 
         // (3) provide a request from specified peer
-        mDut.onDataPathRequestNotification(pubId, peerDiscoveryMac, ndpId, null);
+        mDut.onDataPathRequestNotification(pubId, peerDiscoveryMac, ndpId, null, null);
         mMockLooper.dispatchAll();
 
         // (4) make sure framework respond with the peer specific request.
         verify(mMockNative).respondToDataPathRequest(transactionId.capture(), eq(true), eq(ndpId),
-                interfaceName1.capture(), any(), anyBoolean(), any(),
-                any(), eq(pubId), eq(false));
+                interfaceName1.capture(), any(), anyBoolean(), any(), any(), eq(pubId), eq(false),
+                any(), any());
         mDut.onRespondToDataPathSetupRequestResponse(transactionId.getValue(), true, 0);
         mMockLooper.dispatchAll();
         assertTrue(mAlarmManager
                 .isPending(WifiAwareStateManager.HAL_DATA_PATH_CONFIRM_TIMEOUT_TAG));
 
         // (5) provide a request from a not specified peer.
-        mDut.onDataPathRequestNotification(pubId, peerDiscoveryMac1, ndpId2, null);
+        mDut.onDataPathRequestNotification(pubId, peerDiscoveryMac1, ndpId2, null, null);
         mMockLooper.dispatchAll();
 
         // (6) make sure framework respond with the right accepts any peer request.
         verify(mMockNative).respondToDataPathRequest(anyShort(), eq(true), eq(ndpId2),
-                interfaceName2.capture(), any(), anyBoolean(), any(),
-                any(), eq(pubId), eq(false));
+                interfaceName2.capture(), any(), anyBoolean(), any(), any(), eq(pubId), eq(false),
+                any(), any());
 
         assertNotEquals(interfaceName1.getValue(), interfaceName2.getValue());
     }
@@ -2768,17 +2880,21 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
                 WifiAwareNetworkSpecifier.NETWORK_SPECIFIER_TYPE_IB);
 
         // (2) have responder receive request
-        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null);
+        mDut.onDataPathRequestNotification(pubSubId, peerDiscoveryMac, ndpId, null, null);
         mMockLooper.dispatchAll();
 
         // (3) verify that responder accept
         verify(mMockNative).respondToDataPathRequest(transactionId.capture(), eq(true), eq(ndpId),
-                anyString(), any(), anyBoolean(), any(),
-                any(), eq(pubSubId), eq(false));
+                anyString(), any(), anyBoolean(), any(), any(), eq(pubSubId), eq(false), any(),
+                any());
+        verify(mAwareMetricsMock, atLeastOnce()).updatePeerFoundResult(eq(clientId),
+                eq(res.mSessionId),
+                eq(WIFI_AWARE_PEER_FOUND_REPORTED__RESULT__PEER_FOUND), eq(0), any());
         // (4) response failure
         mDut.onRespondToDataPathSetupRequestResponse(transactionId.getValue(), false, 0);
         mMockLooper.dispatchAll();
-        inOrder.verify(mMockNative).endDataPath(anyShort(), eq(ndpId));
+        inOrder.verify(mMockNative).endDataPath(anyShort(), eq(ndpId), isNotNull(), any(),
+                anyString());
         verifyRequestDeclaredUnfullfillable(nr);
         inOrderM.verify(mAwareMetricsMock).recordNdpStatus(anyInt(), anyBoolean(), anyInt(),
                 anyLong(), anyInt());
@@ -2787,6 +2903,20 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         verify(mAwareMetricsMock, atLeastOnce()).reportAwareInstantModeEnabled(anyBoolean());
         // failure if there's further activity
         verifyNoMoreInteractions(mMockNative, mAwareMetricsMock, mMockNetdWrapper);
+    }
+
+    @Test
+    public void testGetReleaseNdi() throws Exception {
+        final int clientId = 123;
+        InOrder inOrder = inOrder(mMockNative, mMockCm, mMockCallback, mMockSessionCallback);
+        InOrder inOrderM = inOrder(mAwareMetricsMock);
+        initOobDataPathEndPoint(true, 1, clientId, inOrder, inOrderM);
+        String interfaceName = mDut.mDataPathMgr.getAvailableNdi();
+        assertEquals(sAwareInterfacePrefix + "0", interfaceName);
+        assertNull(mDut.mDataPathMgr.getAvailableNdi());
+        mDut.mDataPathMgr.releaseNdi(interfaceName);
+        assertEquals(sAwareInterfacePrefix + "0", mDut.mDataPathMgr.getAvailableNdi());
+        mDut.mDataPathMgr.releaseNdi(interfaceName);
     }
 
     /**

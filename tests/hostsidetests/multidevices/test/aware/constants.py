@@ -23,7 +23,6 @@ import operator
 from mobly import utils
 
 # Package name for the Wi-Fi Aware snippet application
-WIFI_AWARE_SNIPPET_PACKAGE_NAME = 'com.google.snippet.wifi.aware'
 WIFI_SNIPPET_PACKAGE_NAME = 'com.google.snippet.wifi'
 # Timeout duration for Wi-Fi state change operations
 WAIT_WIFI_STATE_TIME_OUT = datetime.timedelta(seconds=30)
@@ -40,11 +39,13 @@ MAX_DISTANCE_MM = 'max_distance_mm'
 PAIRING_CONFIG = 'pairing_config'
 AWARE_NETWORK_INFO_CLASS_NAME = 'android.net.wifi.aware.WifiAwareNetworkInfo'
 TTL_SEC = 'TtlSec'
-INSTANTMODE_ENABLE = 'InstantModeEnabled'
+INSTANT_MODE = 'instant_mode'
 FEATURE_WIFI_AWARE = 'feature:android.hardware.wifi.aware'
 DISCOVERY_KEY_RANGING_ENABLED = 'ranging_enabled'
 DISCOVERY_KEY_MIN_DISTANCE_MM = 'MinDistanceMm'
 DISCOVERY_KEY_MAX_DISTANCE_MM = 'MaxDistanceMm'
+INSTANT_MODE_BAND_5 = '5G'
+INSTANT_MODE_BAND_24 = '2.4G'
 
 
 # onServiceLost reason code
@@ -56,7 +57,7 @@ BITS_TO_MBPS = 1000000
 class WifiAwareTestConstants:
     """Constants for Wi-Fi Aware test."""
 
-    SERVICE_NAME = 'CtsVerifierTestService'
+    SERVICE_NAME = 'CtsVerifierTestService-%s' % utils.rand_ascii_str(5)
     MATCH_FILTER_BYTES = 'bytes used for matching'.encode('utf-8')
     PUB_SSI = 'Extra bytes in the publisher discovery'.encode('utf-8')
     SUB_SSI = 'Arbitrary bytes for the subscribe discovery'.encode('utf-8')
@@ -120,6 +121,11 @@ class DiscoverySessionCallbackMethodType(enum.StrEnum):
     PAIRING_VERIFICATION_FAILED = 'onPairingVerificationFailed'
     BOOTSTRAPPING_SUCCEEDED = 'onBootstrappingSucceeded'
     BOOTSTRAPPING_FAILED = 'onBootstrappingFailed'
+    DATA_PATH_REQUEST_RECEIVED = 'onDataPathRequestReceived'
+    DATA_PATH_CONNECTED = 'onDataPathConnected'
+    DATA_PATH_REQUEST_FAILURE = 'onDataPathRequestFailed'
+    DATA_PATH_DISCONNECTED = 'onDataPathDisconnected'
+
     # Event for the publish or subscribe step: triggered by onPublishStarted or SUBSCRIBE_STARTED or
     # onSessionConfigFailed
     DISCOVER_RESULT = 'discoveryResult'
@@ -241,6 +247,9 @@ class WifiAwareSnippetParams(enum.StrEnum):
     PAIRING_REQUEST_ID = 'pairingRequestId'
     BOOTSTRAPPING_METHOD = 'bootstrappingMethod'
     PEER_ID = 'peerId'
+    PAIRED_SETUP_ENABLED = 'pairingSetupEnabled'
+    PAIRED_CACHE_ENABLED = 'pairingCacheEnabled'
+    PAIRED_VERIFICATION_ENABLED = 'pairingVerificationEnabled'
 
 
 @enum.unique
@@ -325,6 +334,7 @@ class SubscribeConfig:
     pairing_config: AwarePairingConfig | None = None
     terminate_notification_enabled: bool = True
     service_name: str = WifiAwareTestConstants.SERVICE_NAME
+    instant_mode: str | None = None
 
     def to_dict(
         self,
@@ -334,6 +344,10 @@ class SubscribeConfig:
         result['service_specific_info'] = self.service_specific_info.decode(
             'utf-8'
         )
+        if self.instant_mode is None:
+            del result[INSTANT_MODE]
+        else:
+            result[INSTANT_MODE] = self.instant_mode
 
         if self.match_filter is None:
             del result['match_filter']
@@ -373,6 +387,7 @@ class PublishConfig:
     terminate_notification_enabled: bool = True
     pairing_config: AwarePairingConfig | None = None
     service_name: str = WifiAwareTestConstants.SERVICE_NAME
+    instant_mode: str | None = None
 
     def to_dict(
         self,
@@ -389,6 +404,11 @@ class PublishConfig:
             result['match_filter'] = [
                 mf.decode('utf-8') for mf in self.match_filter
             ]
+
+        if self.instant_mode is None:
+            del result[INSTANT_MODE]
+        else:
+            result[INSTANT_MODE] = self.instant_mode
 
         if self.pairing_config is None:
             del result['pairing_config']
@@ -513,6 +533,11 @@ class Characteristics(enum.IntEnum):
     """
 
     WIFI_AWARE_CIPHER_SUITE_NCS_SK_128 = 1
+    WIFI_AWARE_CIPHER_SUITE_NCS_SK_256 = 2
+    WIFI_AWARE_CIPHER_SUITE_NCS_PK_128 = 4
+    WIFI_AWARE_CIPHER_SUITE_NCS_PK_256 = 8
+    WIFI_AWARE_CIPHER_SUITE_NCS_PK_PASN_128 = 16
+    WIFI_AWARE_CIPHER_SUITE_NCS_PK_PASN_256 = 32
 
 
 @dataclasses.dataclass(frozen=False)
@@ -521,7 +546,7 @@ class WifiAwareDataPathSecurityConfig:
 
     https://developer.android.com/reference/android/net/wifi/aware/WifiAwareNetworkSpecifier
     """
-
+    psk_passphrase: str | None = None
     pmk: str | None = None
     cipher_suite: Characteristics | None = (
         Characteristics.WIFI_AWARE_CIPHER_SUITE_NCS_SK_128
@@ -533,10 +558,32 @@ class WifiAwareDataPathSecurityConfig:
             del result['pmk']
         if not self.cipher_suite:
             del result['cipher_suite']
+        if not self.psk_passphrase:
+            del result['psk_passphrase']
         else:
             result['cipher_suite'] = self.cipher_suite.value
         return result
 
+
+@dataclasses.dataclass(frozen=False)
+class AwareDataPathRequest:
+    port: int | None = None
+    transport_protocol: int | None = None
+    data_path_security_config: WifiAwareDataPathSecurityConfig | None = None
+
+    def to_dict(self) -> dict:
+        result = dataclasses.asdict(self)
+        if not self.port:
+            del result['port']
+        if not self.transport_protocol:
+            del result['transport_protocol']
+        if not self.data_path_security_config:
+            del result['data_path_security_config']
+        else:
+            result['data_path_security_config'] = (
+                self.data_path_security_config.to_dict()
+            )
+        return result
 
 @dataclasses.dataclass(frozen=False)
 class WifiAwareNetworkSpecifier:

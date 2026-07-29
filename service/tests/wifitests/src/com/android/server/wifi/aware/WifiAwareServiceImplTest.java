@@ -45,6 +45,7 @@ import android.content.pm.PackageManager;
 import android.net.wifi.OuiKeyedData;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiScanner;
+import android.net.wifi.aware.AwareDataPathRequest;
 import android.net.wifi.aware.Characteristics;
 import android.net.wifi.aware.ConfigRequest;
 import android.net.wifi.aware.IWifiAwareDiscoverySessionCallback;
@@ -428,7 +429,7 @@ public class WifiAwareServiceImplTest extends WifiBaseTest {
                 false);
 
         SubscribeConfig subscribeConfig = new SubscribeConfig.Builder().setServiceName(
-                "something.valid").setMaxDistanceMm(100).build();
+                "something.valid").setIngressDistanceMm(100).build();
         int clientId = doConnect();
         IWifiAwareDiscoverySessionCallback mockCallback = mock(
                 IWifiAwareDiscoverySessionCallback.class);
@@ -622,7 +623,7 @@ public class WifiAwareServiceImplTest extends WifiBaseTest {
     @Test
     public void testSubscribe() {
         SubscribeConfig subscribeConfig = new SubscribeConfig.Builder()
-                .setServiceName("something.valid").setMaxDistanceMm(100).build();
+                .setServiceName("something.valid").setIngressDistanceMm(100).build();
         int clientId = doConnect();
         IWifiAwareDiscoverySessionCallback mockCallback = mock(
                 IWifiAwareDiscoverySessionCallback.class);
@@ -643,7 +644,7 @@ public class WifiAwareServiceImplTest extends WifiBaseTest {
         setTargetSdkToT();
 
         SubscribeConfig subscribeConfig = new SubscribeConfig.Builder()
-                .setServiceName("something.valid").setMaxDistanceMm(100).build();
+                .setServiceName("something.valid").setIngressDistanceMm(100).build();
         int clientId = doConnect();
         IWifiAwareDiscoverySessionCallback mockCallback = mock(
                 IWifiAwareDiscoverySessionCallback.class);
@@ -663,7 +664,7 @@ public class WifiAwareServiceImplTest extends WifiBaseTest {
         doThrow(new SecurityException()).when(mWifiPermissionsUtil)
                 .enforceNearbyDevicesPermission(any(), anyBoolean(), any());
         SubscribeConfig subscribeConfig = new SubscribeConfig.Builder()
-                .setServiceName("something.valid").setMaxDistanceMm(100).build();
+                .setServiceName("something.valid").setIngressDistanceMm(100).build();
         int clientId = doConnect();
         IWifiAwareDiscoverySessionCallback mockCallback = mock(
                 IWifiAwareDiscoverySessionCallback.class);
@@ -822,6 +823,43 @@ public class WifiAwareServiceImplTest extends WifiBaseTest {
                 return null;
             }
         });
+    }
+
+    @Test
+    public void testRequestDataPath() {
+        int sessionId = 123;
+        int peerId = 456;
+        AwareDataPathRequest request = mock(AwareDataPathRequest.class);
+        int clientId = doConnect();
+
+        mDut.requestDataPath(clientId, sessionId, peerId, request);
+
+        verify(mAwareStateManagerMock).requestDataPath(clientId, sessionId, peerId, request);
+    }
+
+    @Test
+    public void testRespondToDataPath() {
+        int sessionId = 123;
+        int peerId = 456;
+        AwareDataPathRequest request = mock(AwareDataPathRequest.class);
+        boolean accept = true;
+        int clientId = doConnect();
+
+        mDut.respondToDataPath(clientId, sessionId, peerId, request, accept);
+
+        verify(mAwareStateManagerMock).respondToDataPathRequest(clientId, sessionId, peerId,
+                request, accept);
+    }
+
+    @Test
+    public void testReleaseDataPath() throws Exception {
+        int sessionId = 123;
+        int peerId = 456;
+        int clientId = doConnect();
+
+        mDut.releaseDataPath(clientId, sessionId, peerId);
+
+        verify(mAwareStateManagerMock).releaseDataPathRequest(clientId, sessionId, peerId);
     }
 
     @Test
@@ -1039,6 +1077,24 @@ public class WifiAwareServiceImplTest extends WifiBaseTest {
         assertThrows(SecurityException.class, () ->mDut.connect(mBinderMock, callingPackage,
                 callingFeatureId, mCallbackMock, null, false, mExtras, true));
 
+    }
+
+    @Test
+    public void testUserSwitch() {
+        mDut.handleUserSwitch(10);
+        verify(mAwareStateManagerMock).handleUserSwitch(10);
+    }
+
+    @Test
+    public void testUserUnlock() {
+        mDut.handleUserUnlock(10);
+        verify(mAwareStateManagerMock).handleUserUnlock(10);
+    }
+
+    @Test
+    public void testUserStop() {
+        mDut.handleUserStop(10);
+        verify(mAwareStateManagerMock).handleUserStop(10);
     }
 
     /*

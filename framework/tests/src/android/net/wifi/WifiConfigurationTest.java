@@ -1047,6 +1047,37 @@ public class WifiConfigurationTest {
         assertEquals(mSsid + KeyMgmt.strings[KeyMgmt.NONE] , config.getProfileKey());
     }
 
+    /**
+     * Verify that {@link WifiConfiguration#getProfileKey} returns profile key strings with correct
+     * userId included for private networks.
+     */
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_MULTI_USER_WIFI_ENHANCEMENT)
+    public void testGetProfileKeyForPrivateNetworks() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        when(Flags.multiUserWifiEnhancement()).thenReturn(true);
+        WifiConfiguration config = new WifiConfiguration();
+        final String mSsid = "\"TestAp\"";
+        config.SSID = mSsid;
+        config.carrierId = TEST_CARRIER_ID;
+        config.subscriptionId = TEST_SUB_ID;
+        config.creatorName = TEST_PACKAGE_NAME;
+        config.allowedKeyManagement.set(KeyMgmt.NONE);
+        config.fromWifiNetworkSuggestion = false;
+        config.shared = false;
+
+        final int testUserId = 10;
+        config.setCreatorUserId(testUserId);
+        when(mMockUserHandle.getIdentifier()).thenReturn(UserHandle.SYSTEM.getIdentifier());
+        assertEquals(createProfileKey(mSsid, KeyMgmt.strings[KeyMgmt.NONE], TEST_PACKAGE_NAME,
+                TEST_CARRIER_ID, TEST_SUB_ID, false) + "-10", config.getProfileKey());
+
+        final int testUserIdFromUid = 20;
+        when(mMockUserHandle.getIdentifier()).thenReturn(testUserIdFromUid);
+        assertEquals(createProfileKey(mSsid, KeyMgmt.strings[KeyMgmt.NONE], TEST_PACKAGE_NAME,
+                TEST_CARRIER_ID, TEST_SUB_ID, false) + "-20", config.getProfileKey());
+    }
+
     private String createProfileKey(String ssid, String keyMgmt, String providerName,
             int carrierId, int subId, boolean isFromSuggestion) {
         StringBuilder sb = new StringBuilder();
@@ -1287,6 +1318,14 @@ public class WifiConfigurationTest {
         wpa3EnterpriseConfig.convertLegacyFieldsToSecurityParamsIfNeeded();
         assertNotNull(wpa3EnterpriseConfig.getSecurityParams(SECURITY_TYPE_EAP_WPA3_ENTERPRISE));
 
+        // If EAP key management is set to FT_EAP and requirePmf is true, it is WPA3 Enterprise.
+        wpa3EnterpriseConfig = new WifiConfiguration();
+        wpa3EnterpriseConfig.allowedKeyManagement.set(KeyMgmt.FT_EAP);
+        wpa3EnterpriseConfig.requirePmf = true;
+        wpa3EnterpriseConfig.allowedProtocols.set(Protocol.RSN);
+        wpa3EnterpriseConfig.convertLegacyFieldsToSecurityParamsIfNeeded();
+        assertNotNull(wpa3EnterpriseConfig.getSecurityParams(SECURITY_TYPE_EAP_WPA3_ENTERPRISE));
+
         // If key management is NONE and wep key is set, it is WEP type.
         WifiConfiguration wepConfig = new WifiConfiguration();
         wepConfig.allowedKeyManagement.set(KeyMgmt.NONE);
@@ -1510,13 +1549,18 @@ public class WifiConfigurationTest {
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_MULTI_USER_WIFI_ENHANCEMENT)
     public void testSetAndGetCreatorUserId() {
-        assumeTrue(Environment.isSdkNewerThanB());
+        assumeTrue(Environment.isSdkAtLeastC());
         when(mMockUserHandle.getIdentifier()).thenReturn(UserHandle.SYSTEM.getIdentifier());
         when(Flags.multiUserWifiEnhancement()).thenReturn(true);
         WifiConfiguration config = new WifiConfiguration();
+        // No stored creator user id
+        assertEquals(config.getStoredCreatorUserId(), -2);
+        assertEquals(config.getCreatorUserIdInternal(), UserHandle.SYSTEM.getIdentifier());
         int testUserId = 10;
         config.setCreatorUserId(testUserId);
         assertEquals(config.getStoredCreatorUserId(), testUserId);
+        assertEquals(config.getCreatorUserIdInternal(), testUserId);
+        // Non system case
         int testUserIdFromUid = 999;
         when(mMockUserHandle.getIdentifier()).thenReturn(testUserIdFromUid);
         assertEquals(config.getCreatorUserId(), testUserIdFromUid);
@@ -1532,5 +1576,35 @@ public class WifiConfigurationTest {
         parcelR.setDataPosition(0);
         WifiConfiguration reconfig = WifiConfiguration.CREATOR.createFromParcel(parcelR);
         assertEquals(reconfig.getStoredCreatorUserId(), testUserId);
+    }
+
+    /**
+     * Verifies that mAllowedAutoJoinInAdvancedProtection can be set and retrieved successfully.
+     */
+    @Test
+    public void testAllowedAutoJoinInAdvancedProtection() {
+        WifiConfiguration config = new WifiConfiguration();
+        // Default should be allowed
+        assertTrue(config.isAutoJoinInAdvancedProtectionModeEnabled());
+
+        // Test set to false
+        config.setAutoJoinInAdvancedProtectionModeEnabled(false);
+        assertFalse(config.isAutoJoinInAdvancedProtectionModeEnabled());
+
+        // Also test parcel
+        Parcel parcelW = Parcel.obtain();
+        config.writeToParcel(parcelW, 0);
+        byte[] bytes = parcelW.marshall();
+        parcelW.recycle();
+
+        Parcel parcelR = Parcel.obtain();
+        parcelR.unmarshall(bytes, 0, bytes.length);
+        parcelR.setDataPosition(0);
+        WifiConfiguration reconfig = WifiConfiguration.CREATOR.createFromParcel(parcelR);
+        assertFalse(reconfig.isAutoJoinInAdvancedProtectionModeEnabled());
+
+        // Test copy constructor
+        WifiConfiguration copyConfig = new WifiConfiguration(config);
+        assertFalse(copyConfig.isAutoJoinInAdvancedProtectionModeEnabled());
     }
 }

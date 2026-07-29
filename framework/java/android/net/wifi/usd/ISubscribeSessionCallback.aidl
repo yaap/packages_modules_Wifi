@@ -16,6 +16,8 @@
 
 package android.net.wifi.usd;
 
+import android.net.wifi.usd.ProximityRangingInfo;
+
 /**
  * Interface for USD subscribe session callback.
  *
@@ -24,7 +26,7 @@ package android.net.wifi.usd;
 oneway interface ISubscribeSessionCallback {
     void onSubscribeFailed(int reasonCode);
     void onSubscribeStarted(int sessionId);
-    void onSubscribeDiscovered(int peerId, in byte[] ssi, int protoType, boolean isFsdEnabled);
+    void onSubscribeDiscovered(int peerId, in byte[] ssi, int protoType, boolean isFsdEnabled, in ProximityRangingInfo prInfo, in byte[] devIk);
     void onSubscribeSessionTerminated(int reasonCode);
     void onMessageReceived(int peerId, in byte[] message);
 }

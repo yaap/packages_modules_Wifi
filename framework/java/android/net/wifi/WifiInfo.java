@@ -251,6 +251,11 @@ public class WifiInfo implements TransportInfo, Parcelable {
     private int mMaxSupportedTxLinkSpeed;
 
     /**
+     * Estimate TX throughput by the wifi service in Kbps.
+     */
+    private int mCalculatedTxKbps;
+
+    /**
      * Rx(receive) Link speed in Mbps
      */
     private int mRxLinkSpeed;
@@ -259,6 +264,11 @@ public class WifiInfo implements TransportInfo, Parcelable {
      * Max supported Rx(receive) link speed in Mbps
      */
     private int mMaxSupportedRxLinkSpeed;
+
+    /**
+     * Estimate RX throughput by the wifi service in Kbps.
+     */
+    private int mCalculatedRxKbps;
 
     /**
      * Frequency in MHz
@@ -654,6 +664,8 @@ public class WifiInfo implements TransportInfo, Parcelable {
             mApTidToLinkMappingNegotiationSupported =
                     source.mApTidToLinkMappingNegotiationSupported;
             mVendorData = new ArrayList<>(source.mVendorData);
+            mCalculatedTxKbps = source.mCalculatedTxKbps;
+            mCalculatedRxKbps = source.mCalculatedRxKbps;
         }
     }
 
@@ -1093,6 +1105,52 @@ public class WifiInfo implements TransportInfo, Parcelable {
     }
 
     /**
+     * Sets the estimated actual TX throughput
+     * @hide
+     */
+    public void setCalculatedTxKbps(int calculatedTxKbps) {
+        mCalculatedTxKbps = calculatedTxKbps;
+    }
+
+    /**
+     * Gets the estimated TX throughput
+     * @hide
+     */
+    public int getCalculatedTxKbps() {
+        return mCalculatedTxKbps;
+    }
+
+    /**
+     * Sets the estimated actual RX throughput
+     * @hide
+     */
+    public void setCalculatedRxKbps(int calculatedRxKbps) {
+        mCalculatedRxKbps = calculatedRxKbps;
+    }
+
+    /**
+     * Gets the estimated RX throughput
+     * @hide
+     */
+    public int getCalculatedRxKbps() {
+        return mCalculatedRxKbps;
+    }
+
+    /**
+     * Update the maximum supported transmit link speed in Mbps
+     * @hide
+     */
+    public boolean updateMaxSupportedMloTxLinkSpeedMbps(int linkId, int maxSupportedTxLinkSpeed) {
+        for (MloLink link : mAffiliatedMloLinks) {
+            if (link.getLinkId() == linkId) {
+                link.setMaxSupportedTxLinkSpeedMbps(maxSupportedTxLinkSpeed);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Returns the current receive link speed in Mbps. In case of Multi Link Operation (MLO),
      * returned value is the receive link speed of the associated link with the highest RSSI.
      *
@@ -1111,6 +1169,20 @@ public class WifiInfo implements TransportInfo, Parcelable {
      */
     public int getMaxSupportedRxLinkSpeedMbps() {
         return mMaxSupportedRxLinkSpeed;
+    }
+
+    /**
+     * Update the maximum supported receive link speed in Mbps
+     * @hide
+     */
+    public boolean updateMaxSupportedMloRxLinkSpeedMbps(int linkId, int maxSupportedRxLinkSpeed) {
+        for (MloLink link : mAffiliatedMloLinks) {
+            if (link.getLinkId() == linkId) {
+                link.setMaxSupportedRxLinkSpeedMbps(maxSupportedRxLinkSpeed);
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1246,7 +1318,7 @@ public class WifiInfo implements TransportInfo, Parcelable {
 
     /**
      * Returns true if the current Wifi network is a trusted network, false otherwise.
-     * @see WifiNetworkSuggestion.Builder#setUntrusted(boolean).
+     * @see WifiNetworkSuggestion.Builder#setUntrusted(boolean)
      * @hide
      */
     @SystemApi
@@ -1263,7 +1335,7 @@ public class WifiInfo implements TransportInfo, Parcelable {
      * Returns true if the current Wifi network is a restricted network, false otherwise.
      * A restricted network has its {@link NetworkCapabilities#NET_CAPABILITY_NOT_RESTRICTED}
      * capability removed.
-     * @see WifiNetworkSuggestion.Builder#setRestricted(boolean).
+     * @see WifiNetworkSuggestion.Builder#setRestricted(boolean)
      */
     public boolean isRestricted() {
         return mRestricted;
@@ -1276,7 +1348,7 @@ public class WifiInfo implements TransportInfo, Parcelable {
 
     /**
      * Returns true if the current Wifi network is an oem paid network, false otherwise.
-     * @see WifiNetworkSuggestion.Builder#setOemPaid(boolean).
+     * @see WifiNetworkSuggestion.Builder#setOemPaid(boolean)
      * @hide
      */
     @RequiresApi(Build.VERSION_CODES.S)
@@ -1295,7 +1367,7 @@ public class WifiInfo implements TransportInfo, Parcelable {
 
     /**
      * Returns true if the current Wifi network is an oem private network, false otherwise.
-     * @see WifiNetworkSuggestion.Builder#setOemPrivate(boolean).
+     * @see WifiNetworkSuggestion.Builder#setOemPrivate(boolean)
      * @hide
      */
     @RequiresApi(Build.VERSION_CODES.S)
@@ -1316,7 +1388,7 @@ public class WifiInfo implements TransportInfo, Parcelable {
 
     /**
      * Returns true if the current Wifi network is a carrier merged network, false otherwise.
-     * @see WifiNetworkSuggestion.Builder#setCarrierMerged(boolean).
+     * @see WifiNetworkSuggestion.Builder#setCarrierMerged(boolean)
      * @hide
      */
     @SystemApi
@@ -1564,9 +1636,13 @@ public class WifiInfo implements TransportInfo, Parcelable {
                 .append(", Tx Link speed: ").append(mTxLinkSpeed).append(LINK_SPEED_UNITS)
                 .append(", Max Supported Tx Link speed: ")
                 .append(mMaxSupportedTxLinkSpeed).append(LINK_SPEED_UNITS)
+                .append(", Calculated Tx : ")
+                .append(mCalculatedTxKbps / 1000).append(LINK_SPEED_UNITS)
                 .append(", Rx Link speed: ").append(mRxLinkSpeed).append(LINK_SPEED_UNITS)
                 .append(", Max Supported Rx Link speed: ")
                 .append(mMaxSupportedRxLinkSpeed).append(LINK_SPEED_UNITS)
+                .append(", Calculated Rx : ")
+                .append(mCalculatedRxKbps / 1000).append(LINK_SPEED_UNITS)
                 .append(", Frequency: ").append(mFrequency).append(FREQUENCY_UNITS)
                 .append(", Net ID: ").append(mNetworkId)
                 .append(", Metered hint: ").append(mMeteredHint)
@@ -1685,6 +1761,8 @@ public class WifiInfo implements TransportInfo, Parcelable {
         dest.writeTypedList(mAffiliatedMloLinks);
         dest.writeBoolean(mApTidToLinkMappingNegotiationSupported);
         dest.writeList(mVendorData);
+        dest.writeInt(mCalculatedTxKbps);
+        dest.writeInt(mCalculatedRxKbps);
     }
 
     /**
@@ -1752,6 +1830,8 @@ public class WifiInfo implements TransportInfo, Parcelable {
                 info.mAffiliatedMloLinks = in.createTypedArrayList(MloLink.CREATOR);
                 info.mApTidToLinkMappingNegotiationSupported = in.readBoolean();
                 info.mVendorData = ParcelUtil.readOuiKeyedDataList(in);
+                info.mCalculatedTxKbps = in.readInt();
+                info.mCalculatedRxKbps = in.readInt();
                 return info;
             }
 
@@ -1922,7 +2002,9 @@ public class WifiInfo implements TransportInfo, Parcelable {
                 && Objects.equals(mNetworkKey, thatWifiInfo.mNetworkKey)
                 && mApTidToLinkMappingNegotiationSupported
                 == thatWifiInfo.mApTidToLinkMappingNegotiationSupported
-                && Objects.equals(mVendorData, thatWifiInfo.mVendorData);
+                && Objects.equals(mVendorData, thatWifiInfo.mVendorData)
+                && mCalculatedTxKbps == thatWifiInfo.mCalculatedTxKbps
+                && mCalculatedRxKbps == thatWifiInfo.mCalculatedRxKbps;
     }
 
     @Override
@@ -1975,7 +2057,9 @@ public class WifiInfo implements TransportInfo, Parcelable {
                 mRestricted,
                 mNetworkKey,
                 mApTidToLinkMappingNegotiationSupported,
-                mVendorData);
+                mVendorData,
+                mCalculatedTxKbps,
+                mCalculatedRxKbps);
     }
 
     /**

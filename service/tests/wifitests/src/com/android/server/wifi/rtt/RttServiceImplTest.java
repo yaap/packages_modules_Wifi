@@ -28,19 +28,25 @@ import static com.android.server.wifi.rtt.RttTestUtils.getDummyRangingResults;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeFalse;
 import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.validateMockitoUsage;
 import static org.mockito.Mockito.verify;
@@ -54,24 +60,31 @@ import android.app.test.MockAnswerUtil;
 import android.app.test.TestAlarmManager;
 import android.content.AttributionSource;
 import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.location.LocationManager;
 import android.net.MacAddress;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiSsid;
 import android.net.wifi.aware.IWifiAwareMacAddressProvider;
 import android.net.wifi.aware.MacAddrMapping;
 import android.net.wifi.aware.PeerHandle;
 import android.net.wifi.aware.WifiAwareManager;
+import android.net.wifi.rtt.ContinuousRangingResultCallback;
+import android.net.wifi.rtt.IContinuousRangingResultCallback;
+import android.net.wifi.rtt.IProximityDetectionMacAddressCallback;
 import android.net.wifi.rtt.IRttCallback;
+import android.net.wifi.rtt.ProximityDetectionCharacteristics;
 import android.net.wifi.rtt.RangingRequest;
 import android.net.wifi.rtt.RangingResult;
 import android.net.wifi.rtt.RangingResultCallback;
 import android.net.wifi.rtt.ResponderConfig;
 import android.net.wifi.rtt.WifiRttManager;
+import android.net.wifi.util.Environment;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -82,19 +95,29 @@ import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.WorkSource;
 import android.os.test.TestLooper;
+import android.provider.Settings;
+import android.text.TextUtils;
 import android.util.Pair;
 
 import androidx.test.filters.SmallTest;
 
 import com.android.dx.mockito.inline.extended.ExtendedMockito;
 import com.android.modules.utils.build.SdkLevel;
+import com.android.server.wifi.ActiveModeWarden;
+import com.android.server.wifi.ClientModeImplMonitor;
+import com.android.server.wifi.ClientModeManager;
 import com.android.server.wifi.Clock;
+import com.android.server.wifi.ConcreteClientModeManager;
+import com.android.server.wifi.FrameworkFacade;
 import com.android.server.wifi.HalDeviceManager;
 import com.android.server.wifi.MockResources;
 import com.android.server.wifi.SsidTranslator;
 import com.android.server.wifi.WifiBaseTest;
 import com.android.server.wifi.WifiConfigManager;
+import com.android.server.wifi.WifiInjector;
+import com.android.server.wifi.WifiNative;
 import com.android.server.wifi.WifiSettingsConfigStore;
+import com.android.server.wifi.usd.UsdRequestManager;
 import com.android.server.wifi.hal.WifiRttController;
 import com.android.server.wifi.proto.nano.WifiMetricsProto;
 import com.android.server.wifi.util.WifiPermissionsUtil;
@@ -102,6 +125,7 @@ import com.android.wifi.flags.Flags;
 import com.android.wifi.resources.R;
 
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
@@ -113,6 +137,8 @@ import org.mockito.quality.Strictness;
 
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -126,6 +152,10 @@ public class RttServiceImplTest extends WifiBaseTest {
 
     private static final int BACKGROUND_PROCESS_EXEC_GAP_MS = 10 * 60 * 1000;  // 10 minutes.
     private static final int MEASUREMENT_DURATION = 1000;
+    private static final String TEST_ANDROID_ID = "314Deadbeef";
+    private static final String TEST_PD_INTERFACE_NAME = "wlan0";
+    private static final MacAddress TEST_STA_MAC_ADDRESS =
+            MacAddress.fromString("2a:ab:88:48:00:1A");
 
     private RttServiceImplSpy mDut;
     private TestLooper mMockLooper;
@@ -153,6 +183,9 @@ public class RttServiceImplTest extends WifiBaseTest {
     private ArgumentCaptor<WifiRttController.RttControllerRangingResultsCallback>
             mRangingResultsCbCaptor = ArgumentCaptor.forClass(
             WifiRttController.RttControllerRangingResultsCallback.class);
+    private ArgumentCaptor<ActiveModeWarden.PrimaryClientModeManagerChangedCallback>
+            mPrimaryCmmChangedCallbackCaptor = ArgumentCaptor.forClass(
+            ActiveModeWarden.PrimaryClientModeManagerChangedCallback.class);
 
     private BinderLinkToDeathAnswer mBinderLinkToDeathCounter = new BinderLinkToDeathAnswer();
     private BinderUnlinkToDeathAnswer mBinderUnlinkToDeathCounter = new BinderUnlinkToDeathAnswer();
@@ -197,6 +230,30 @@ public class RttServiceImplTest extends WifiBaseTest {
     WifiConfiguration mWifiConfiguration = new WifiConfiguration();
     @Mock
     SsidTranslator mSsidTranslator;
+    @Mock
+    FrameworkFacade mFrameworkFacade;
+    @Mock
+    WifiNative mWifiNative;
+    @Mock
+    ActiveModeWarden mActiveModeWarden;
+    @Mock
+    SupplicantWifiRttController mMockSupplicantRttController;
+    private SupplicantWifiRttController.ProximityRangingCapabilities mProximityRangingCapabilities;
+    private byte[] mMockHalMacAddress;
+    @Mock
+    IContinuousRangingResultCallback mMockContinuousRangingResultCallback;
+    @Mock
+    ClientModeManager mMockClientModeManager;
+    @Mock
+    WifiInfo mMockWifiInfo;
+    @Mock
+    ConcreteClientModeManager mMockConcreteClientModeManager;
+    @Mock
+    ClientModeImplMonitor mMockClientModeImplMonitor;
+    @Mock
+    WifiInjector mWifiInjector;
+    @Mock
+    UsdRequestManager mUsdRequestManager;
 
     /**
      * Using instead of spy to avoid native crash failures - possibly due to
@@ -219,13 +276,45 @@ public class RttServiceImplTest extends WifiBaseTest {
         }
     }
 
+    /**
+     * Helper to get mock proximity ranging capabilities.
+     */
+    private SupplicantWifiRttController.ProximityRangingCapabilities getMockPdCapabilities() {
+        android.hardware.wifi.supplicant.ProximityRangingDeviceInfo prHalCapabilities =
+                new android.hardware.wifi.supplicant.ProximityRangingDeviceInfo();
+        prHalCapabilities.maxNumContinuousRangingSeekerSessions = 1;
+        prHalCapabilities.isConnectedMacRandomizationSupported = false;
+        prHalCapabilities.protocolInfo =
+                new android.hardware.wifi.supplicant.ProximityRangingProtocolInfo();
+        prHalCapabilities.protocolInfo.deviceName = mDut.mProximityRangingDeviceName;
+        prHalCapabilities.protocolInfo.isEdcaBasedRangingSupported = true;
+        prHalCapabilities.protocolInfo.maxSupportedPacketBandwidthEdcaBased =
+                android.hardware.wifi.supplicant.RttBw.BW_80MHZ;
+        prHalCapabilities.protocolInfo.maxSupportedPreambleEdcaBased =
+                android.hardware.wifi.supplicant.RttPreamble.VHT;
+        prHalCapabilities.protocolInfo.isNtbNonSecureLtfRangingSupported = true;
+        prHalCapabilities.protocolInfo.isNtbSecureLtfRangingSupported = true;
+        prHalCapabilities.protocolInfo.maxSupportedPacketBandwidthNtb =
+                android.hardware.wifi.supplicant.RttBw.BW_80MHZ;
+        prHalCapabilities.protocolInfo.maxSupportedPreambleNtb =
+                android.hardware.wifi.supplicant.RttPreamble.VHT;
+        prHalCapabilities.protocolInfo.isNtbIstaRoleSupported = true;
+        prHalCapabilities.protocolInfo.isNtbRstaRoleSupported = true;
+        prHalCapabilities.protocolInfo.isEdcaBasedIstaRoleSupported = true;
+        prHalCapabilities.protocolInfo.isEdcaBasedRstaRoleSupported = true;
+        return new SupplicantWifiRttController.ProximityRangingCapabilities(prHalCapabilities);
+    }
+
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
         mSession = ExtendedMockito.mockitoSession().strictness(Strictness.LENIENT)
                 .mockStatic(Flags.class, withSettings().lenient())
+                .mockStatic(WifiInjector.class, withSettings().lenient())
                 .startMocking();
         when(Flags.monitorIntentForAllUsers()).thenReturn(false);
+        when(WifiInjector.getInstance()).thenReturn(mWifiInjector);
+        when(mWifiInjector.getUsdRequestManager()).thenReturn(mUsdRequestManager);
         mDut = new RttServiceImplSpy(mockContext);
         mDut.fakeUid = mDefaultUid;
         mMockLooper = new TestLooper();
@@ -254,6 +343,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         when(mockPermissionUtil.checkCallersLocationPermission(eq(mPackageName), eq(mFeatureId),
                 anyInt(), anyBoolean(), nullable(String.class))).thenReturn(true);
         when(mockPermissionUtil.isLocationModeEnabled()).thenReturn(true);
+        when(mockPermissionUtil.checkNetworkStackPermission(anyInt())).thenReturn(true);
         when(mockRttControllerHal.rangeRequest(anyInt(), any(RangingRequest.class))).thenReturn(
                 true);
         when(mockHalDeviceManager.isStarted()).thenReturn(true);
@@ -265,14 +355,23 @@ public class RttServiceImplTest extends WifiBaseTest {
         when(mockContext.getSystemServiceName(PowerManager.class)).thenReturn(
                 Context.POWER_SERVICE);
         when(mockContext.getSystemService(PowerManager.class)).thenReturn(mMockPowerManager);
+        when(mockContext.getContentResolver()).thenReturn(mock(ContentResolver.class));
+        when(mFrameworkFacade.getSecureStringSetting(any(), eq(Settings.Secure.ANDROID_ID)))
+                .thenReturn(TEST_ANDROID_ID);
+        when(Flags.proximityRanging()).thenReturn(true);
 
         doAnswer(mBinderLinkToDeathCounter).when(mockIbinder).linkToDeath(any(), anyInt());
         doAnswer(mBinderUnlinkToDeathCounter).when(mockIbinder).unlinkToDeath(any(), anyInt());
 
         mDut.start(mMockLooper.getLooper(), mockClock, mockAwareManager, mockMetrics,
                 mockPermissionUtil, mWifiSettingsConfigStore, mockHalDeviceManager,
-                mWifiConfigManager, mSsidTranslator);
+                mWifiConfigManager, mSsidTranslator, mWifiNative, mActiveModeWarden,
+                mMockClientModeImplMonitor);
         mMockLooper.dispatchAll();
+        if (Environment.isSdkNewerThanB() && Flags.proximityRanging()) {
+            verify(mActiveModeWarden).registerPrimaryClientModeManagerChangedCallback(
+                    mPrimaryCmmChangedCallbackCaptor.capture());
+        }
         ArgumentCaptor<BroadcastReceiver> bcastRxCaptor = ArgumentCaptor.forClass(
                 BroadcastReceiver.class);
         verify(mockContext).registerReceiver(bcastRxCaptor.capture(),
@@ -292,6 +391,24 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         validateCorrectRttStatusChangeBroadcast();
         assertTrue(mDut.isAvailable());
+
+        WifiRttController.Capabilities cap = new WifiRttController.Capabilities();
+        cap.lcrSupported = true;
+        cap.oneSidedRttSupported = true;
+        cap.ntbInitiatorSupported = true;
+        cap.lciSupported = true;
+        when(mockRttControllerHal.getRttCapabilities()).thenReturn(cap);
+        mDut.getRttCharacteristics();
+        verify(mockRttControllerHal).getRttCapabilities();
+        if (Environment.isSdkNewerThanB()) {
+            verify(mMockClientModeImplMonitor).registerListener(any());
+            assertNotNull(mDut.mProximityRangingRandomizedMacAddress);
+            assertNotNull(mDut.mProximityRangingDeviceName);
+        } else {
+            verify(mMockClientModeImplMonitor, never()).registerListener(any());
+            assertNull(mDut.mProximityRangingRandomizedMacAddress);
+            assertNull(mDut.mProximityRangingDeviceName);
+        }
     }
 
     @After
@@ -300,6 +417,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         if (mSession != null) {
             mSession.finishMocking();
         }
+
         assertEquals("Binder links != unlinks to death (size)",
                 mBinderLinkToDeathCounter.mUniqueExecs.size(),
                 mBinderUnlinkToDeathCounter.mUniqueExecs.size());
@@ -309,10 +427,12 @@ public class RttServiceImplTest extends WifiBaseTest {
 
     @Test
     public void testRegisterReceiverForAllUsersWhenFlagOn() throws Exception {
+        assumeTrue(Environment.isSdkAtLeastC());
         when(Flags.monitorIntentForAllUsers()).thenReturn(true);
         mDut.start(mMockLooper.getLooper(), mockClock, mockAwareManager, mockMetrics,
                 mockPermissionUtil, mWifiSettingsConfigStore, mockHalDeviceManager,
-                mWifiConfigManager, mSsidTranslator);
+                mWifiConfigManager, mSsidTranslator, mWifiNative, mActiveModeWarden,
+                mMockClientModeImplMonitor);
         mMockLooper.dispatchAll();
         verify(mockContext).registerReceiverForAllUsers(any(BroadcastReceiver.class),
                 argThat(filter -> filter.hasAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)),
@@ -380,7 +500,8 @@ public class RttServiceImplTest extends WifiBaseTest {
             clock.time += MEASUREMENT_DURATION;
             // (2) verify that the request was issued to the WifiRttController
             verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(requests[i]));
-            verifyWakeupSet(i % 2 != 0, 0);
+            verifyWakeupSet(i % 2 != 0 ? RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS
+                    : RttServiceImpl.HAL_RANGING_TIMEOUT_MS, 0);
 
             // (3) HAL calls back with result
             mRangingResultsCbCaptor.getValue()
@@ -411,6 +532,52 @@ public class RttServiceImplTest extends WifiBaseTest {
     }
 
     /**
+     * Validate a downgraded secure ranging flow.
+     */
+    @Test
+    public void testSecureRangingDowngrade() throws RemoteException {
+        // Reset RTT controller capabilities.
+        mDut.setRttCapabilitiesForTest(null);
+        RangingRequest request = RttTestUtils.getDummySecureRangingRequest(
+                RangingRequest.SECURITY_MODE_OPPORTUNISTIC);
+        mWifiConfiguration.preSharedKey = "TEST_PASSWORD";
+        WifiSsid ssid = request.mRttPeers.get(
+                1).getSecureRangingConfig().getPasnConfig().getWifiSsid();
+        when(mWifiConfigManager.getConfiguredNetworkWithPassword(eq(ssid),
+                eq(WifiConfiguration.SECURITY_TYPE_SAE))).thenReturn(mWifiConfiguration);
+        when(mSsidTranslator.getTranslatedSsid(eq(ssid))).thenReturn(ssid);
+
+        // Make sure the second peer is configured with no password for SAE.
+        assertNull(request.mRttPeers.get(1).getSecureRangingConfig().getPasnConfig().getPassword());
+
+        ClockAnswer clock = new ClockAnswer();
+        doAnswer(clock).when(mockClock).getWallClockMillis();
+        clock.time = 100;
+        mDut.startRanging(mockIbinder, mPackageName, mFeatureId, null, request, mockCallback,
+                mExtras);
+        mMockLooper.dispatchAll();
+        verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), mRequestCaptor.capture());
+        verifyWakeupSet(RttServiceImpl.HAL_RANGING_TIMEOUT_MS, 0);
+        // Verify the timeout was set to default value HAL_RANGING_TIMEOUT_MS
+        RangingRequest halRequest = mRequestCaptor.getValue();
+        assertNotEquals("Request to WifiRttController is not null", null, halRequest);
+        assertEquals("Size of request", request.mRttPeers.size(), halRequest.mRttPeers.size());
+
+        // Verify ranging results are processed correctly
+        Pair<List<RangingResult>, List<RangingResult>> resultsPair = getDummyRangingResults(
+                halRequest);
+        mRangingResultsCbCaptor.getValue().onRangingResults(mIntCaptor.getValue(),
+                resultsPair.second);
+        mMockLooper.dispatchAll();
+        verify(mockCallback).onRangingResults(mListCaptor.capture());
+        assertTrue(compareListContentsNoOrdering(resultsPair.second, mListCaptor.getValue()));
+
+        verifyWakeupCancelled();
+        verifyNoMoreInteractions(mockRttControllerHal, mockCallback,
+                mAlarmManager.getAlarmManager());
+    }
+
+    /**
      * Validate a successful secure ranging flow.
      */
     @Test
@@ -434,7 +601,8 @@ public class RttServiceImplTest extends WifiBaseTest {
                 mExtras);
         mMockLooper.dispatchAll();
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), mRequestCaptor.capture());
-        verifyWakeupSet(false, 0);
+        verifyWakeupSet(request.mRttPeers.get(1).getNtbMaxTimeBetweenMeasurementsMicros() / 1000,
+                0);
         RangingRequest halRequest = mRequestCaptor.getValue();
         assertNotEquals("Request to WifiRttController is not null", null, halRequest);
         assertEquals("Size of request", request.mRttPeers.size(), halRequest.mRttPeers.size());
@@ -504,7 +672,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         // verify that the request is translated from the PeerHandle issued to WifiRttController
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), mRequestCaptor.capture());
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         RangingRequest finalRequest = mRequestCaptor.getValue();
         assertNotEquals("Request to WifiRttController is not null", null, finalRequest);
@@ -582,7 +750,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         // verify that the request is translated from the PeerHandle issued to WifiRttController
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), mRequestCaptor.capture());
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         assertEquals(burstSize, mRequestCaptor.getValue().getRttBurstSize());
 
@@ -637,7 +805,7 @@ public class RttServiceImplTest extends WifiBaseTest {
             if (i == 0) {
                 verify(mockCallback).onRangingFailure(RangingResultCallback.STATUS_CODE_FAIL);
             } else {
-                verifyWakeupSet(true, 0);
+                verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
             }
 
             // (4) on failed HAL: even if the HAL calls back with result we shouldn't dispatch
@@ -684,7 +852,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         // (2) verify that the request was issued to the WifiRttController
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (3) HAL calls back with result - should get a FAILED callback
         when(mockPermissionUtil.checkCallersLocationPermission(eq(mPackageName), eq(mFeatureId),
@@ -736,7 +904,7 @@ public class RttServiceImplTest extends WifiBaseTest {
             // (3) verify first request and all odd requests were issued to the WifiRttController
             if (i == 0 || i % 2 == 1) {
                 verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(requests[i]));
-                verifyWakeupSet(true, 0);
+                verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
             }
 
             // (4) trigger first death recipient (which will map to the even UID)
@@ -807,7 +975,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         verify(mockIbinder).linkToDeath(mDeathRecipientCaptor.capture(), anyInt());
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (2) execute binder death
         mDeathRecipientCaptor.getValue().binderDied();
@@ -861,7 +1029,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         // (2) verify that the request was issued to the WifiRttController
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (3) cancel the request
         mDut.cancelRanging(worksourceCancel);
@@ -909,7 +1077,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         // (2) verify that the request was issued to the WifiRttController
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (3) cancel the request
         mDut.cancelRanging(worksourceCancel);
@@ -947,7 +1115,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         // (2) verify that the request was issued to the WifiRttController
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (3) HAL calls back with result - but wrong ID
         mRangingResultsCbCaptor.getValue()
@@ -1000,7 +1168,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         // (2) verify that the request was issued to the WifiRttController
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (3) return results with missing entries
         mRangingResultsCbCaptor.getValue()
@@ -1044,7 +1212,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         // (2) verify that the request was issued to the WifiRttController
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (3) return results with ALL results missing
         mRangingResultsCbCaptor.getValue()
@@ -1088,7 +1256,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         // verify that request 1 was issued to the WifiRttController
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request1));
         int cmdId1 = mIntCaptor.getValue();
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (2) time-out
         mAlarmManager.dispatch(RttServiceImpl.HAL_RANGING_TIMEOUT_TAG);
@@ -1098,7 +1266,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         verify(mockRttControllerHal).rangeCancel(eq(cmdId1), any());
         verify(mockCallback).onRangingFailure(RangingResultCallback.STATUS_CODE_FAIL);
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request2));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (3) send both result 1 and result 2
         mRangingResultsCbCaptor.getValue()
@@ -1162,7 +1330,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         mMockLooper.dispatchAll();
 
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request1));
-        verifyWakeupSet(true, clock.time);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, clock.time);
 
         // (1.1) get result
         mRangingResultsCbCaptor.getValue()
@@ -1187,7 +1355,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         mMockLooper.dispatchAll();
 
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request3));
-        verifyWakeupSet(true, clock.time);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, clock.time);
 
         // (3.1) get result
         mRangingResultsCbCaptor.getValue()
@@ -1207,7 +1375,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         mMockLooper.dispatchAll();
 
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request4));
-        verifyWakeupSet(true, clock.time);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, clock.time);
 
         // (4.1) get result
         mRangingResultsCbCaptor.getValue()
@@ -1241,7 +1409,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         mMockLooper.dispatchAll();
 
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request6));
-        verifyWakeupSet(true, clock.time);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, clock.time);
 
         // (6.1) get result
         mRangingResultsCbCaptor.getValue()
@@ -1325,7 +1493,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         mMockLooper.dispatchAll();
 
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request1));
-        verifyWakeupSet(true, clock.time);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, clock.time);
 
         // (1.1) get result
         mRangingResultsCbCaptor.getValue()
@@ -1343,7 +1511,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         mMockLooper.dispatchAll();
 
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request2));
-        verifyWakeupSet(true, clock.time);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, clock.time);
 
         // (2.1) get result
         mRangingResultsCbCaptor.getValue()
@@ -1414,7 +1582,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         mMockLooper.dispatchAll();
 
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // 2. issue FLOOD LEVEL requests + 10 at various UIDs - no failure expected
         for (int i = 0; i < RttServiceImpl.MAX_QUEUED_PER_UID + 10; ++i) {
@@ -1452,9 +1620,6 @@ public class RttServiceImplTest extends WifiBaseTest {
     @Test
     public void testGetRttCharacteristics() {
         WifiRttController.Capabilities cap = new WifiRttController.Capabilities();
-        cap.lcrSupported = true;
-        cap.oneSidedRttSupported = true;
-        cap.lciSupported = true;
         when(mockRttControllerHal.getRttCapabilities()).thenReturn(cap);
         Bundle characteristics = mDut.getRttCharacteristics();
         assertTrue(characteristics.getBoolean(CHARACTERISTICS_KEY_BOOLEAN_ONE_SIDED_RTT));
@@ -1495,7 +1660,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         controllerInorder.verify(mockRttControllerHal).rangeRequest(
                 mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // 2. issue FLOOD LEVEL requests + 10: should get 11 failures (10 extra + 1 original)
         for (int i = 0; i < RttServiceImpl.MAX_QUEUED_PER_UID + 10; ++i) {
@@ -1517,7 +1682,7 @@ public class RttServiceImplTest extends WifiBaseTest {
 
         controllerInorder.verify(mockRttControllerHal).rangeRequest(
                 mIntCaptor.capture(), eq(request));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // 4. issue a request: don't expect a failure
         mDut.startRanging(mockIbinder, mPackageName, mFeatureId, useUids ? null : ws, request,
@@ -1600,7 +1765,7 @@ public class RttServiceImplTest extends WifiBaseTest {
         mMockLooper.dispatchAll();
 
         verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request1));
-        verifyWakeupSet(true, 0);
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
 
         // (2) disable RTT: all requests should "fail"
         if (failureMode == FAILURE_MODE_DISABLE_WIFI) {
@@ -1680,15 +1845,14 @@ public class RttServiceImplTest extends WifiBaseTest {
         mLocationModeReceiver.onReceive(mockContext, intent);
     }
 
-    private void verifyWakeupSet(boolean useAwareTimeout, long baseTime) {
+    private void verifyWakeupSet(long timeout, long baseTime) {
         ArgumentCaptor<Long> longCaptor = ArgumentCaptor.forClass(Long.class);
 
         mInOrder.verify(mAlarmManager.getAlarmManager()).setExact(anyInt(), longCaptor.capture(),
                 eq(RttServiceImpl.HAL_RANGING_TIMEOUT_TAG), any(AlarmManager.OnAlarmListener.class),
                 any(Handler.class));
 
-        assertEquals(baseTime + (useAwareTimeout ? RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS
-                : RttServiceImpl.HAL_RANGING_TIMEOUT_MS), longCaptor.getValue().longValue());
+        assertEquals(baseTime + timeout, longCaptor.getValue().longValue());
     }
 
     private void verifyWakeupCancelled() {
@@ -1765,5 +1929,1327 @@ public class RttServiceImplTest extends WifiBaseTest {
         public long answer() {
             return time;
         }
+    }
+
+    @Mock
+    WifiRttController.Capabilities mMockCapabilities;
+
+    /**
+     * Helper to create a mock ResponderConfig.
+     */
+    private ResponderConfig createMockResponderConfig(int type, boolean is80211azNtbSupported,
+            long ntbMaxTimeMicros) {
+        ResponderConfig mockConfig = mock(ResponderConfig.class);
+        when(mockConfig.getResponderType()).thenReturn(type);
+        when(mockConfig.is80211azNtbSupported()).thenReturn(is80211azNtbSupported);
+        when(mockConfig.getNtbMaxTimeBetweenMeasurementsMicros()).thenReturn(ntbMaxTimeMicros);
+        return mockConfig;
+    }
+
+    @Test
+    public void calculateTimeout_emptyResponderList_returnsBaseTimeout() {
+        List<ResponderConfig> responders = Collections.emptyList();
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(responders, mMockCapabilities);
+        Assert.assertEquals(RttServiceImpl.HAL_RANGING_TIMEOUT_MS, timeout);
+    }
+
+    @Test
+    public void calculateTimeout_nullResponderList_returnsBaseTimeout() {
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(null, mMockCapabilities);
+        Assert.assertEquals(RttServiceImpl.HAL_RANGING_TIMEOUT_MS, timeout);
+    }
+
+    @Test
+    public void calculateTimeout_noSpecialResponders_returnsBaseTimeout() {
+        ResponderConfig normalResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AP,
+                false, 0); // Assuming RESPONDER_AP is a valid type
+        List<ResponderConfig> responders = Collections.singletonList(normalResponder);
+
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(responders, mMockCapabilities);
+        Assert.assertEquals(RttServiceImpl.HAL_RANGING_TIMEOUT_MS, timeout);
+    }
+
+    @Test
+    public void calculateTimeout_oneAwareResponder_returnsAwareTimeout() {
+        ResponderConfig awareResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AWARE,
+                false, 0);
+        List<ResponderConfig> responders = Collections.singletonList(awareResponder);
+
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(responders, mMockCapabilities);
+        Assert.assertEquals(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, timeout);
+    }
+
+    @Test
+    public void calculateTimeout_awareAndNormalResponders_returnsAwareTimeout() {
+        ResponderConfig awareResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AWARE,
+                false, 0);
+        ResponderConfig normalResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AP,
+                false, 0);
+        List<ResponderConfig> responders = Arrays.asList(normalResponder, awareResponder);
+
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(responders, mMockCapabilities);
+        Assert.assertEquals(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, timeout);
+    }
+
+    @Test
+    public void calculateTimeout_ntbSupported_ntbResponder_returnsNtbTimeout() {
+        mMockCapabilities.ntbInitiatorSupported = true;
+        long ntbTimeMicros = 15000_000; // 15 seconds
+        long ntbTimeMillis = ntbTimeMicros / 1000;
+
+        ResponderConfig ntbResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AP, true,
+                ntbTimeMicros);
+        List<ResponderConfig> responders = Collections.singletonList(ntbResponder);
+
+        long expectedTimeout = Math.max(RttServiceImpl.HAL_RANGING_TIMEOUT_MS, ntbTimeMillis);
+
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(responders, mMockCapabilities);
+        assertEquals(expectedTimeout, timeout);
+    }
+
+    @Test
+    public void calculateTimeout_ntbNotSupportedByInitiator_ntbResponder_returnsBaseTimeout() {
+        mMockCapabilities.ntbInitiatorSupported = false; // Initiator doesn't
+        // support NTB
+        long ntbTimeMicros = 15000_000; // 15 seconds
+
+        ResponderConfig ntbResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AP, true,
+                ntbTimeMicros); // Responder supports NTB
+        List<ResponderConfig> responders = Collections.singletonList(ntbResponder);
+
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(responders, mMockCapabilities);
+        Assert.assertEquals(RttServiceImpl.HAL_RANGING_TIMEOUT_MS, timeout); // Should fallback
+        // to base
+    }
+
+    @Test
+    public void calculateTimeout_ntbSupported_ntbResponderNotSupported_returnsBaseTimeout() {
+        mMockCapabilities.ntbInitiatorSupported = true;
+        long ntbTimeMicros = 15000_000; // 15 seconds
+
+        ResponderConfig nonNtbResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AP,
+                false, ntbTimeMicros); // Responder doesn't support
+        // NTB
+        List<ResponderConfig> responders = Collections.singletonList(nonNtbResponder);
+
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(responders, mMockCapabilities);
+        Assert.assertEquals(RttServiceImpl.HAL_RANGING_TIMEOUT_MS, timeout); // Should fallback
+        // to base
+    }
+
+    @Test
+    public void calculateTimeout_awareAndNtbResponders_ntbHigher_returnsNtbTimeout() {
+        mMockCapabilities.ntbInitiatorSupported = true;
+        long ntbTimeMicros =
+                (RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS + 1000) * 1000; // NTB time >
+        // Aware time
+        long ntbTimeMillis = ntbTimeMicros / 1000;
+
+        ResponderConfig awareResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AWARE,
+                false, 0);
+        ResponderConfig ntbResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AP, true,
+                ntbTimeMicros);
+        List<ResponderConfig> responders = Arrays.asList(awareResponder, ntbResponder);
+
+        long expectedTimeout = Math.max(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, ntbTimeMillis);
+
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(responders, mMockCapabilities);
+        assertEquals(expectedTimeout, timeout);
+    }
+
+    @Test
+    public void calculateTimeout_awareAndNtbResponders_awareHigher_returnsAwareTimeout() {
+        mMockCapabilities.ntbInitiatorSupported = true;
+        // NTB time < Aware time (after conversion to ms)
+        long ntbTimeMicros = (RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS - 1000) * 1000;
+        if (ntbTimeMicros < 0) {
+            ntbTimeMicros = RttServiceImpl.HAL_RANGING_TIMEOUT_MS * 500; // ensure
+        }
+        // positive and smaller
+        long ntbTimeMillis = ntbTimeMicros / 1000;
+
+
+        ResponderConfig awareResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AWARE,
+                false, 0);
+        ResponderConfig ntbResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AP, true,
+                ntbTimeMicros);
+        List<ResponderConfig> responders = Arrays.asList(awareResponder, ntbResponder);
+
+        long expectedTimeout = Math.max(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, ntbTimeMillis);
+        // In this setup, Aware timeout should be greater
+        expectedTimeout = Math.max(expectedTimeout, RttServiceImpl.HAL_RANGING_TIMEOUT_MS);
+
+
+        long timeout = RttServiceImpl.calculateRangeRequestTimeoutMs(responders, mMockCapabilities);
+        Assert.assertEquals(expectedTimeout, timeout);
+    }
+
+    @Test
+    public void calculateTimeout_nullCapabilities_ntbResponder_returnsBaseOrDefaultAware() {
+        // If capabilities is null, ntbInitiatorSupported check should effectively be false.
+        long ntbTimeMicros = 15000_000; // 15 seconds
+
+        ResponderConfig ntbResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AP, true,
+                ntbTimeMicros);
+        ResponderConfig awareResponder = createMockResponderConfig(ResponderConfig.RESPONDER_AWARE,
+                false, 0);
+
+        List<ResponderConfig> respondersNtbOnly = Collections.singletonList(ntbResponder);
+        long timeoutNtbOnly = RttServiceImpl.calculateRangeRequestTimeoutMs(respondersNtbOnly,
+                null); // Pass null capabilities
+        Assert.assertEquals(RttServiceImpl.HAL_RANGING_TIMEOUT_MS, timeoutNtbOnly);
+
+        List<ResponderConfig> respondersWithAware = Arrays.asList(ntbResponder, awareResponder);
+        long timeoutWithAware = RttServiceImpl.calculateRangeRequestTimeoutMs(respondersWithAware,
+                null); // Pass null capabilities
+        Assert.assertEquals(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, timeoutWithAware);
+    }
+
+    /**
+     * Validate that when the HAL returns results with "busy" entries (i.e. some requests
+     * failed because the peer is busy) they are filled-in with FAILED_BUSY results.
+     */
+    @Test
+    public void testBusyResults() throws Exception {
+        RangingRequest request = RttTestUtils.getDummyRangingRequest((byte) 0);
+        List<RangingResult> halResults = new ArrayList<>();
+        List<RangingResult> expectedResults = new ArrayList<>();
+        final int retryAfterDurationMillis = 1234;
+
+        // result 0: success
+        halResults.add(new RangingResult.Builder()
+                .setStatus(WifiRttController.FRAMEWORK_RTT_STATUS_SUCCESS)
+                .setMacAddress(request.mRttPeers.get(0).macAddress).build());
+        expectedResults.add(new RangingResult.Builder()
+                .setStatus(RangingResult.STATUS_SUCCESS)
+                .setMacAddress(request.mRttPeers.get(0).macAddress).build());
+
+        // result 1: busy
+        halResults.add(new RangingResult.Builder()
+                .setStatus(WifiRttController.FRAMEWORK_RTT_STATUS_FAIL_BUSY_TRY_LATER)
+                .setMacAddress(request.mRttPeers.get(1).macAddress)
+                .setRetryAfterDurationMillis(retryAfterDurationMillis).build());
+        expectedResults.add(new RangingResult.Builder()
+                .setStatus(RangingResult.STATUS_BUSY_TRY_LATER)
+                .setMacAddress(request.mRttPeers.get(1).macAddress)
+                .setRetryAfterDurationMillis(retryAfterDurationMillis).build());
+
+        // result 2: fail
+        halResults.add(new RangingResult.Builder()
+                .setStatus(WifiRttController.FRAMEWORK_RTT_STATUS_FAILURE)
+                .setMacAddress(request.mRttPeers.get(2).macAddress).build());
+        expectedResults.add(new RangingResult.Builder()
+                .setStatus(RangingResult.STATUS_FAIL)
+                .setMacAddress(request.mRttPeers.get(2).macAddress).build());
+
+
+        // (1) request ranging operation
+        mDut.startRanging(mockIbinder, mPackageName, mFeatureId, null, request,
+                mockCallback, mExtras);
+        mMockLooper.dispatchAll();
+
+        // (2) verify that the request was issued to the WifiRttController
+        verify(mockRttControllerHal).rangeRequest(mIntCaptor.capture(), eq(request));
+        verifyWakeupSet(RttServiceImpl.HAL_AWARE_RANGING_TIMEOUT_MS, 0);
+
+        // (3) return results with missing entries
+        mRangingResultsCbCaptor.getValue()
+                .onRangingResults(mIntCaptor.getValue(), halResults);
+        mMockLooper.dispatchAll();
+
+        // (5) verify that (full) results dispatched
+        verify(mockCallback).onRangingResults(mListCaptor.capture());
+        assertTrue(compareListContentsNoOrdering(expectedResults, mListCaptor.getValue()));
+        verifyWakeupCancelled();
+
+        // verify metrics
+        verify(mockMetrics).recordRequest(eq(mDefaultWs), eq(request));
+        verify(mockMetrics).recordResult(eq(request), eq(halResults), anyInt());
+        verify(mockMetrics).recordOverallStatus(WifiMetricsProto.WifiRttLog.OVERALL_SUCCESS);
+        verify(mockMetrics).enableVerboseLogging(anyBoolean());
+        verifyNoMoreInteractions(mockRttControllerHal, mockMetrics, mockCallback,
+                mAlarmManager.getAlarmManager());
+    }
+
+    @Test
+    public void testGetProximityDetectionCharacteristics_whenDisabled_returnsNull()
+            throws Exception {
+        assumeTrue(Environment.isSdkNewerThanB());
+        ProximityDetectionCharacteristics characteristics =
+                mDut.getProximityDetectionCharacteristics();
+        mMockLooper.dispatchAll();
+        assertNull(characteristics);
+    }
+
+    @Test
+    public void testGetProximityDetectionCharacteristics() throws Exception {
+        setupRttServiceForProximityRanging();
+        ProximityDetectionCharacteristics characteristics =
+                mDut.getProximityDetectionCharacteristics();
+        mMockLooper.dispatchAll();
+        assertNotNull(characteristics);
+        // check that default device name is set
+        assertNotNull(characteristics.getProximityDetectionDeviceName());
+        assertEquals(mProximityRangingCapabilities.deviceName,
+                characteristics.getProximityDetectionDeviceName());
+    }
+
+    @Test
+    public void testSetProximityDetectionDeviceName() throws Exception {
+        setupRttServiceForProximityRanging();
+        String deviceName = "testDevice";
+        mDut.setProximityDetectionDeviceName(deviceName);
+        mMockLooper.dispatchAll();
+        verify(mMockSupplicantRttController).setProximityRangingDeviceName(eq(deviceName));
+        assertEquals(deviceName, mDut.mProximityRangingDeviceName);
+    }
+
+    @Test
+    public void testGetProximityDetectionRandomizedMacAddress_whenDisabled_returnsNull()
+            throws Exception {
+        assumeTrue(Environment.isSdkNewerThanB());
+        MacAddress macAddress = mDut.getProximityDetectionRandomizedMacAddress();
+        mMockLooper.dispatchAll();
+        assertNull(macAddress);
+    }
+
+    @Test
+    public void testGetProximityDetectionRandomizedMacAddress() throws Exception {
+        setupRttServiceForProximityRanging();
+        MacAddress macAddress = mDut.getProximityDetectionRandomizedMacAddress();
+        mMockLooper.dispatchAll();
+        assertNotNull(macAddress);
+        assertEquals(mDut.mProximityRangingRandomizedMacAddress, macAddress);
+    }
+
+    @Test
+    public void testStartContinuousRangingSuccess() throws Exception {
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, null, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        verify(mMockSupplicantRttController).rangeRequest(mIntCaptor.capture(),
+                mRequestCaptor.capture());
+    }
+
+    @Test
+    public void testStartContinuousRangingSuccessWithUsdPeerId() throws Exception {
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequestWithUsdPeerId();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mUsdRequestManager.getMacAddressFromUsdPeerId(1234))
+                .thenReturn(TEST_STA_MAC_ADDRESS.toByteArray());
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, null, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        verify(mUsdRequestManager).getMacAddressFromUsdPeerId(1234);
+        verify(mMockSupplicantRttController).rangeRequest(mIntCaptor.capture(),
+                mRequestCaptor.capture());
+
+        RangingRequest sentRequest = mRequestCaptor.getValue();
+        assertEquals(1, sentRequest.mRttPeers.size());
+        assertEquals(TEST_STA_MAC_ADDRESS,
+                sentRequest.mRttPeers.get(0).getMacAddress());
+    }
+
+    @Test
+    public void testContinuousRangingResultsWithUsdPeerId() throws Exception {
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequestWithUsdPeerId();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+
+        // USD peer ID translation to MAC
+        when(mUsdRequestManager.getMacAddressFromUsdPeerId(1234))
+                .thenReturn(TEST_STA_MAC_ADDRESS.toByteArray());
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        verify(mMockSupplicantRttController).rangeRequest(mIntCaptor.capture(), any());
+        int cmdId = mIntCaptor.getValue();
+
+        // Create HAL ranging results using the translated MAC address
+        List<RangingResult> halResults = new ArrayList<>();
+        halResults.add(new RangingResult.Builder()
+                .setStatus(WifiRttController.FRAMEWORK_RTT_STATUS_SUCCESS)
+                .setMacAddress(TEST_STA_MAC_ADDRESS)
+                .setDistanceMm(100)
+                .build());
+
+        // Simulate HAL sending the results
+        mDut.mSupplicantRttEventCallback.onRangingResults(cmdId, halResults);
+        mMockLooper.dispatchAll();
+
+        // Verify the callback receives the results with USD peer ID mapped back
+        verify(callback).onRangingResults(mListCaptor.capture());
+        List<RangingResult> appResults = mListCaptor.getValue();
+        assertEquals(1, appResults.size());
+        RangingResult appResult = appResults.get(0);
+
+        assertEquals(RangingResult.STATUS_SUCCESS, appResult.getStatus());
+        assertEquals(TEST_STA_MAC_ADDRESS, appResult.getMacAddress());
+        assertEquals(1234, appResult.getUsdPeerId());
+        assertEquals(100, appResult.getDistanceMm());
+    }
+
+    @Test
+    public void testContinuousRangingResults_nullResults() throws Exception {
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        verify(mMockSupplicantRttController).rangeRequest(mIntCaptor.capture(), any());
+        int cmdId = mIntCaptor.getValue();
+
+        // Pass null results
+        mDut.mSupplicantRttEventCallback.onRangingResults(cmdId, null);
+        mMockLooper.dispatchAll();
+
+        verify(callback).onRangingResults(mListCaptor.capture());
+        assertTrue(mListCaptor.getValue().isEmpty());
+    }
+
+    @Test
+    public void testContinuousRangingResults_emptyResults() throws Exception {
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        verify(mMockSupplicantRttController).rangeRequest(mIntCaptor.capture(), any());
+        int cmdId = mIntCaptor.getValue();
+
+        // Pass empty results
+        mDut.mSupplicantRttEventCallback.onRangingResults(cmdId, new ArrayList<>());
+        mMockLooper.dispatchAll();
+
+        verify(callback).onRangingResults(mListCaptor.capture());
+        assertTrue(mListCaptor.getValue().isEmpty());
+    }
+
+    @Test
+    public void testContinuousRangingResults_multipleResults() throws Exception {
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        verify(mMockSupplicantRttController).rangeRequest(mIntCaptor.capture(), any());
+        int cmdId = mIntCaptor.getValue();
+
+        // Pass multiple results
+        List<RangingResult> halResults = new ArrayList<>();
+        halResults.add(new RangingResult.Builder()
+                .setStatus(WifiRttController.FRAMEWORK_RTT_STATUS_SUCCESS)
+                .setMacAddress(TEST_STA_MAC_ADDRESS)
+                .setDistanceMm(100)
+                .build());
+        halResults.add(new RangingResult.Builder()
+                .setStatus(WifiRttController.FRAMEWORK_RTT_STATUS_SUCCESS)
+                .setMacAddress(TEST_STA_MAC_ADDRESS)
+                .setDistanceMm(200)
+                .build());
+        mDut.mSupplicantRttEventCallback.onRangingResults(cmdId, halResults);
+        mMockLooper.dispatchAll();
+
+        verify(callback).onRangingResults(mListCaptor.capture());
+        assertTrue(mListCaptor.getValue().isEmpty());
+    }
+
+    @Test
+    public void testStartContinuousRangingWithUsdPeerIdNotFound() throws Exception {
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequestWithUsdPeerId();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+
+        when(mUsdRequestManager.getMacAddressFromUsdPeerId(1234)).thenReturn(null);
+
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, null, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        verify(mUsdRequestManager).getMacAddressFromUsdPeerId(1234);
+        verify(callback).onRangingFailure(ContinuousRangingResultCallback.FAILURE_REASON_GENERIC);
+    }
+
+    @Test
+    public void testStartContinuousRangingWithUsdPeerId_UsdManagerNull() throws Exception {
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequestWithUsdPeerId();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+
+        // Mock UsdRequestManager returning null
+        when(mWifiInjector.getUsdRequestManager()).thenReturn(null);
+
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, null, request, callback);
+        mMockLooper.dispatchAll();
+
+        verify(callback).onRangingFailure(ContinuousRangingResultCallback.FAILURE_REASON_GENERIC);
+    }
+
+    @Test
+    public void testStartContinuousRanging_SupplicantWifiRttControllerIsNullDuringExecution()
+        throws Exception {
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+
+        // Call startContinuousRanging while mSupplicantWifiRttController is non-null
+        // so it passes the initial synchronous check and gets posted to the handler thread.
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs,
+                request, callback);
+
+        // Nullify the controller before the handler processes the message to hit the first branch
+        mDut.mSupplicantWifiRttController = null;
+        mMockLooper.dispatchAll();
+
+        // Verify the failure callback and metrics recording
+        verify(callback).onRangingFailure(
+                ContinuousRangingResultCallback.FAILURE_REASON_RTT_NOT_AVAILABLE);
+        verify(mockMetrics).recordContinuousRangingStartStatus(
+                ContinuousRangingResultCallback.FAILURE_REASON_RTT_NOT_AVAILABLE, request);
+    }
+
+    @Test
+    public void testStartContinuousRanging_AnotherContinuousSessionActive() throws Exception {
+        setupRttServiceForProximityRanging();
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        // 1. Start the FIRST continuous ranging session so mContinuousRangingSessions is NOT empty
+        RangingRequest request1 = RttTestUtils.getDummyContinuousRangingRequest();
+        IContinuousRangingResultCallback callback1 = mock(IContinuousRangingResultCallback.class);
+        IBinder binder1 = mock(IBinder.class);
+        when(callback1.asBinder()).thenReturn(binder1);
+        mDut.startContinuousRanging(binder1, mPackageName, mFeatureId, mDefaultWs,
+                request1, callback1);
+        mMockLooper.dispatchAll();
+
+        // 2. Try to start a SECOND continuous ranging session to hit the second branch
+        RangingRequest request2 = RttTestUtils.getDummyContinuousRangingRequest();
+        IContinuousRangingResultCallback callback2 = mock(IContinuousRangingResultCallback.class);
+        IBinder binder2 = mock(IBinder.class);
+        when(callback2.asBinder()).thenReturn(binder2);
+
+        mDut.startContinuousRanging(binder2, mPackageName, mFeatureId, mDefaultWs,
+                request2, callback2);
+        mMockLooper.dispatchAll();
+
+        // Verify the failure callback and metrics recording for the second request
+        verify(callback2).onRangingFailure(
+                ContinuousRangingResultCallback.FAILURE_REASON_RTT_BUSY);
+        verify(mockMetrics).recordContinuousRangingStartStatus(
+                ContinuousRangingResultCallback.FAILURE_REASON_RTT_BUSY, request2);
+    }
+
+    @Test
+    public void testStartContinuousRangingWithUsdPeerId_FlagDisabled() throws Exception {
+        setupRttServiceForProximityRanging();
+
+        // Disable the proximityRangingImpl flag
+        when(Flags.proximityRangingImpl()).thenReturn(false);
+
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequestWithUsdPeerId();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, null, request, callback);
+        mMockLooper.dispatchAll();
+
+        // Verifies that the failure callback is triggered when trying to use USD peer ID
+        // while the feature flag is disabled
+        verify(callback).onRangingFailure(
+                ContinuousRangingResultCallback.FAILURE_REASON_RTT_NOT_AVAILABLE);
+    }
+
+    @Test
+    public void testStartContinuousRangingWithInvalidRequest() throws Exception {
+        setupRttServiceForProximityRanging();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+
+        // Null request
+        assertThrows(IllegalArgumentException.class,
+                () -> mDut.startContinuousRanging(mockIbinder, mPackageName, mFeatureId, null,
+                        null, callback));
+
+        // Empty request
+        RangingRequest emptyRequest = new RangingRequest.Builder().build();
+        assertThrows(IllegalArgumentException.class,
+                () -> mDut.startContinuousRanging(mockIbinder, mPackageName, mFeatureId, null,
+                        emptyRequest, callback));
+
+        // Non-STA responder
+        RangingRequest nonStaRequest = RttTestUtils.getDummyRangingRequest((byte) 1);
+        assertThrows(IllegalArgumentException.class,
+                () -> mDut.startContinuousRanging(mockIbinder, mPackageName, mFeatureId, null,
+                        nonStaRequest, callback));
+
+        // Missing MAC address and USD Peer ID
+        ResponderConfig dummyConfig = RttTestUtils.getDummyContinuousRangingRequest()
+                .mRttPeers.get(0);
+        ResponderConfig invalidPeerResponder = new ResponderConfig.Builder()
+                .setPeerHandle(new PeerHandle(1234))
+                .setResponderType(ResponderConfig.RESPONDER_STA)
+                .setSecureRangingConfig(dummyConfig.getSecureRangingConfig())
+                .setProximityDetectionConfig(dummyConfig.getProximityDetectionConfig())
+                .build();
+        RangingRequest invalidPeerRequest = new RangingRequest.Builder()
+                .addResponder(invalidPeerResponder)
+                .build();
+        mDut.startContinuousRanging(mockIbinder, mPackageName, mFeatureId, null,
+                invalidPeerRequest, callback);
+        mMockLooper.dispatchAll();
+        verify(callback).onRangingFailure(ContinuousRangingResultCallback.FAILURE_REASON_GENERIC);
+    }
+
+    @Test
+    public void testStartContinuousRangingWithProximityRangingImplFlagDisabled() throws Exception {
+        when(Flags.proximityRangingImpl()).thenReturn(false);
+        setupRttServiceForProximityRanging();
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+
+        mDut.startContinuousRanging(mockIbinder, mPackageName, mFeatureId, null, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        verify(callback).onRangingFailure(ContinuousRangingResultCallback.FAILURE_REASON_GENERIC);
+    }
+
+    @Test
+    public void testStopContinuousRanging() throws Exception {
+        setupRttServiceForProximityRanging();
+        mDut.stopContinuousRanging(null);
+        mMockLooper.dispatchAll();
+        // No exception should be thrown
+    }
+
+    @Test
+    public void testSetWifiState_SdkNotNewerThanB() throws Exception {
+        assumeFalse(Environment.isSdkNewerThanB());
+        ClientModeManager clientModeManager = mock(ClientModeManager.class);
+        when(mActiveModeWarden.getPrimaryClientModeManager()).thenReturn(clientModeManager);
+        when(clientModeManager.getInterfaceName()).thenReturn(TEST_PD_INTERFACE_NAME);
+
+        when(mWifiNative.isSupplicantAidlServiceVersionAtLeast(5)).thenReturn(true);
+
+        mDut.setWifiState(WifiManager.WIFI_STATE_ENABLED);
+
+        assertNull(mDut.mSupplicantWifiRttController);
+        verify(mWifiNative, never()).createSupplicantWifiRttController(anyString());
+    }
+
+    private void setupRttServiceForProximityRanging() throws Exception {
+        assumeTrue(Environment.isSdkNewerThanB());
+        when(Flags.proximityRangingImpl()).thenReturn(true);
+        mDut.mSupplicantWifiRttController = mMockSupplicantRttController;
+        when(mActiveModeWarden.getPrimaryClientModeManager()).thenReturn(mMockClientModeManager);
+        when(mMockClientModeManager.getInterfaceName()).thenReturn(TEST_PD_INTERFACE_NAME);
+        when(mMockConcreteClientModeManager.getInterfaceName()).thenReturn(TEST_PD_INTERFACE_NAME);
+        when(mWifiNative.isSupplicantAidlServiceVersionAtLeast(5))
+                .thenReturn(true);
+        when(mWifiNative.createSupplicantWifiRttController(TEST_PD_INTERFACE_NAME))
+                .thenReturn(mMockSupplicantRttController);
+
+        when(mMockConcreteClientModeManager.getConnectionInfo()).thenReturn(mMockWifiInfo);
+        when(mMockWifiInfo.getMacAddress()).thenReturn(TEST_STA_MAC_ADDRESS.toString());
+
+        // Mock HAL MAC address interaction
+        doAnswer(new MockAnswerUtil.AnswerWithArguments() {
+            @SuppressWarnings({"UnusedMethod", "EffectivelyPrivate"})
+            public void answer(byte[] mac) throws Exception {
+                mMockHalMacAddress = mac;
+            }
+        }).when(mMockSupplicantRttController).setProximityRangingMacAddress(any());
+        doAnswer(new MockAnswerUtil.AnswerWithArguments() {
+            @SuppressWarnings({"UnusedMethod", "EffectivelyPrivate"})
+            public byte[] answer() throws Exception {
+                return mMockHalMacAddress;
+            }
+        }).when(mMockSupplicantRttController).getProximityRangingMacAddress();
+
+        doNothing().when(mMockSupplicantRttController).setProximityRangingDeviceName(anyString());
+
+        when(mMockSupplicantRttController.getName()).thenReturn(TEST_PD_INTERFACE_NAME);
+        mProximityRangingCapabilities = getMockPdCapabilities();
+        when(mMockSupplicantRttController.getProximityRangingCapabilities()).thenReturn(
+                mProximityRangingCapabilities);
+
+        // Simulate Wi-Fi primary CMM changed to trigger RTT controller initialization
+        mPrimaryCmmChangedCallbackCaptor.getValue().onChange(null, mMockConcreteClientModeManager);
+        verify(mMockSupplicantRttController).setProximityRangingDeviceName(
+                eq(mDut.mProximityRangingDeviceName));
+        verify(mMockSupplicantRttController).setProximityRangingMacAddress(
+                eq(mDut.mProximityRangingRandomizedMacAddress.toByteArray()));
+    }
+
+    @Test
+    public void testInitializeSupplicantWifiRttController() throws Exception {
+        setupRttServiceForProximityRanging();
+        // Test success case
+        verify(mMockSupplicantRttController).getName();
+        verify(mMockSupplicantRttController).setProximityRangingDeviceName(any());
+        verify(mMockSupplicantRttController).setProximityRangingMacAddress(any());
+        verify(mMockSupplicantRttController).getProximityRangingCapabilities();
+
+        // Test failure cases
+        mDut.mSupplicantWifiRttController = null;
+        assertFalse(mDut.initializeSupplicantWifiRttController());
+
+        when(mMockSupplicantRttController.getName()).thenReturn(null);
+        mDut.mSupplicantWifiRttController = mMockSupplicantRttController;
+        assertFalse(mDut.initializeSupplicantWifiRttController());
+
+        when(mMockSupplicantRttController.getName()).thenReturn(TEST_PD_INTERFACE_NAME);
+        when(mMockSupplicantRttController.getProximityRangingCapabilities()).thenReturn(null);
+        mDut.mSupplicantWifiRttController = mMockSupplicantRttController;
+        assertFalse(mDut.initializeSupplicantWifiRttController());
+    }
+
+    @Test
+    public void testWifiStateChanged() throws Exception {
+        setupRttServiceForProximityRanging();
+
+        assertNotNull(mDut.mSupplicantWifiRttController);
+        verify(mWifiNative).createSupplicantWifiRttController(eq(TEST_PD_INTERFACE_NAME));
+        verify(mMockSupplicantRttController).registerRttEventCallback(
+                mDut.mSupplicantRttEventCallback);
+        // We already have a test for initializeSupplicantWifiRttController, so no explicit verify
+        // call for mDut.initializeSupplicantWifiRttController() here.
+
+        // Reset mocks for next scenario
+        mDut.setWifiState(WifiManager.WIFI_STATE_DISABLED);
+        reset(mWifiNative);
+        reset(mMockSupplicantRttController);
+        mDut.mSupplicantWifiRttController = null; // Clear state for the next test case
+
+        // Scenario 2: Wi-Fi ENABLED - Flags.proximityRanging() is false
+        when(Flags.proximityRanging()).thenReturn(false);
+        when(mWifiNative.isSupplicantAidlServiceVersionAtLeast(5))
+                .thenReturn(true);
+
+        mDut.setWifiState(WifiManager.WIFI_STATE_ENABLED);
+        assertNull(mDut.mSupplicantWifiRttController);
+        verify(mWifiNative, never()).createSupplicantWifiRttController(anyString());
+
+        // Reset mocks
+        mDut.setWifiState(WifiManager.WIFI_STATE_DISABLED);
+        reset(mWifiNative, mMockSupplicantRttController);
+        mDut.mSupplicantWifiRttController = null;
+
+        // Scenario 3: Wi-Fi ENABLED - mWifiNative.isSupplicantAidlServiceVersionAtLeast(5) is
+        // false
+        when(Flags.proximityRanging()).thenReturn(true);
+        when(mWifiNative.isSupplicantAidlServiceVersionAtLeast(5))
+                .thenReturn(false);
+
+        mDut.setWifiState(WifiManager.WIFI_STATE_ENABLED);
+        assertNull(mDut.mSupplicantWifiRttController);
+        verify(mWifiNative, never()).createSupplicantWifiRttController(anyString());
+
+        // Reset mocks
+        mDut.setWifiState(WifiManager.WIFI_STATE_DISABLED);
+        reset(mWifiNative, mMockSupplicantRttController);
+        mDut.mSupplicantWifiRttController = null;
+
+        // Scenario 4: Wi-Fi DISABLED
+        mDut.setWifiState(WifiManager.WIFI_STATE_DISABLED);
+        assertNull(mDut.mSupplicantWifiRttController);
+    }
+
+    @Test
+    public void testPrimaryCmmChangedCallback() throws Exception {
+        setupRttServiceForProximityRanging();
+
+        mDut.setWifiState(WifiManager.WIFI_STATE_DISABLED);
+        reset(mWifiNative, mMockSupplicantRttController);
+        mDut.mProximityRangingIfaceName = null;
+        mDut.mSupplicantWifiRttController = null; // Clear state for the next test case
+
+        // Scenario 1: Primary CMM changed from null to valid --
+        // createSupplicantWifiRttController returns null
+        when(mWifiNative.isSupplicantAidlServiceVersionAtLeast(5))
+                .thenReturn(true);
+        when(mWifiNative.createSupplicantWifiRttController(eq(TEST_PD_INTERFACE_NAME)))
+                .thenReturn(null);
+
+        mPrimaryCmmChangedCallbackCaptor.getValue().onChange(null, mMockConcreteClientModeManager);
+
+        assertNull(mDut.mSupplicantWifiRttController);
+        verify(mWifiNative).createSupplicantWifiRttController(eq(TEST_PD_INTERFACE_NAME));
+        verify(mMockSupplicantRttController, never()).registerRttEventCallback(any());
+
+        // Reset mocks
+        mDut.setWifiState(WifiManager.WIFI_STATE_DISABLED);
+        reset(mWifiNative, mMockSupplicantRttController);
+        mDut.mSupplicantWifiRttController = null;
+        mDut.mProximityRangingIfaceName = null;
+
+        // Scenario 2: Primary CMM changed from null to valid --
+        // initializeSupplicantWifiRttController returns false
+        when(mWifiNative.isSupplicantAidlServiceVersionAtLeast(5))
+                .thenReturn(true);
+        when(mWifiNative.createSupplicantWifiRttController(eq(TEST_PD_INTERFACE_NAME)))
+                .thenReturn(mMockSupplicantRttController);
+        when(mMockSupplicantRttController.getName()).thenReturn(TEST_PD_INTERFACE_NAME);
+        when(mMockSupplicantRttController.getProximityRangingCapabilities()).thenReturn(null);
+
+        mPrimaryCmmChangedCallbackCaptor.getValue().onChange(null, mMockConcreteClientModeManager);
+
+        assertNull(mDut.mSupplicantWifiRttController);
+        verify(mWifiNative).createSupplicantWifiRttController(eq(TEST_PD_INTERFACE_NAME));
+        verify(mMockSupplicantRttController).registerRttEventCallback(
+                mDut.mSupplicantRttEventCallback);
+    }
+
+    /**
+     * Helper to setup RttServiceImpl for Proximity Ranging tests.
+     */
+
+    @Test
+    public void testRegisterProximityDetectionMacAddressCallback_immediateCallback() throws
+            Exception {
+        setupRttServiceForProximityRanging();
+        IProximityDetectionMacAddressCallback callback =
+                mock(IProximityDetectionMacAddressCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        MacAddress macAddress = mDut.getProximityDetectionRandomizedMacAddress();
+
+        mDut.registerProximityDetectionMacAddressCallback(callback);
+        mMockLooper.dispatchAll();
+
+        verify(callback).onResult(eq(macAddress));
+    }
+
+    @Test
+    public void testContinuousRangingSuccess() throws Exception {
+        setupRttServiceForProximityRanging();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        ArgumentCaptor<RangingRequest> requestCaptor =
+                ArgumentCaptor.forClass(RangingRequest.class);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        verify(mMockSupplicantRttController).rangeRequest(mIntCaptor.capture(),
+                requestCaptor.capture());
+        assertEquals(request, requestCaptor.getValue());
+
+        // Stop the ranging
+        mDut.stopContinuousRanging(mDefaultWs);
+        mMockLooper.dispatchAll();
+
+        verify(mMockSupplicantRttController).rangeCancel(eq(mIntCaptor.getValue()), any());
+
+        // Simulate termination callback from HAL
+        mDut.mSupplicantRttEventCallback.onContinuousRangingTerminated(mIntCaptor.getValue(),
+                ContinuousRangingResultCallback.TERMINATE_REASON_USER_REQUEST);
+        mMockLooper.dispatchAll();
+
+        verify(callback).onRangingStopped(
+                ContinuousRangingResultCallback.TERMINATE_REASON_USER_REQUEST);
+    }
+
+    @Test
+    public void testConcurrentRangingFailure() throws Exception {
+        setupRttServiceForProximityRanging();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        // Start the first continuous ranging session
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        // Try to start another continuous ranging session
+        IContinuousRangingResultCallback anotherCallback = mock(
+                IContinuousRangingResultCallback.class);
+        IBinder anotherBinder = mock(IBinder.class);
+        when(anotherCallback.asBinder()).thenReturn(anotherBinder);
+        mDut.startContinuousRanging(anotherBinder, mPackageName, mFeatureId, mDefaultWs, request,
+                anotherCallback);
+        mMockLooper.dispatchAll();
+        verify(anotherCallback).onRangingFailure(
+                ContinuousRangingResultCallback.FAILURE_REASON_RTT_BUSY);
+
+        // Try to start a one-shot ranging session
+        IRttCallback oneShotCallback = mock(IRttCallback.class);
+        mDut.startRanging(mock(IBinder.class), mPackageName, mFeatureId, null, request,
+                oneShotCallback, mExtras);
+        mMockLooper.dispatchAll();
+        verify(oneShotCallback).onRangingFailure(RangingResultCallback.STATUS_CODE_FAIL);
+    }
+
+    @Test
+    public void testContinuousRangingTimeout() throws Exception {
+        setupRttServiceForProximityRanging();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        // Simulate timeout
+        mAlarmManager.dispatch(RttServiceImpl.HAL_RANGING_TIMEOUT_TAG + " Continuous");
+        mMockLooper.dispatchAll();
+
+        verify(mMockSupplicantRttController).rangeCancel(anyInt(), any());
+        verify(callback).onRangingStopped(
+                ContinuousRangingResultCallback.TERMINATE_REASON_TIMEOUT);
+    }
+
+    @Test
+    public void testContinuousRangingCleanupOnWifiDisabled() throws Exception {
+        setupRttServiceForProximityRanging();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        // Simulate Wi-Fi disabled
+        mDut.setWifiState(WifiManager.WIFI_STATE_DISABLED);
+
+        verify(mMockSupplicantRttController).rangeCancel(anyInt(), any());
+        verify(callback).onRangingStopped(
+                ContinuousRangingResultCallback.TERMINATE_REASON_UNKNOWN);
+    }
+
+    @Test
+    public void testContinuousRangingCleanupOnBinderDeath() throws Exception {
+        setupRttServiceForProximityRanging();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        ArgumentCaptor<IBinder.DeathRecipient> drCaptor =
+                ArgumentCaptor.forClass(IBinder.DeathRecipient.class);
+        doNothing().when(binder).linkToDeath(drCaptor.capture(), anyInt());
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        // Simulate binder death
+        drCaptor.getValue().binderDied();
+        mMockLooper.dispatchAll();
+
+        verify(mMockSupplicantRttController).rangeCancel(anyInt(), any());
+        verify(callback).onRangingStopped(
+                ContinuousRangingResultCallback.TERMINATE_REASON_UNKNOWN);
+    }
+
+    @Test
+    public void testContinuousRangingCleanupOnHalTermination() throws Exception {
+        setupRttServiceForProximityRanging();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        ArgumentCaptor<Integer> cmdIdCaptor = ArgumentCaptor.forClass(Integer.class);
+        when(mMockSupplicantRttController.rangeRequest(cmdIdCaptor.capture(),
+                any(RangingRequest.class)))
+                .thenReturn(true);
+
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        // Simulate HAL-initiated termination
+        final int terminationReason = ContinuousRangingResultCallback
+                .TERMINATE_REASON_RECEIVED_RTT_TERMINATE;
+        mDut.mSupplicantRttEventCallback.onContinuousRangingTerminated(cmdIdCaptor.getValue(),
+                terminationReason);
+        mMockLooper.dispatchAll();
+
+        verify(callback).onRangingStopped(eq(terminationReason));
+    }
+
+    @Test
+    public void testConvertProximityRangingCapabilitiesToBundle_nullCapabilities() {
+        assumeTrue(Environment.isSdkNewerThanB());
+        Bundle characteristics = mDut.convertProximityRangingCapabilitiesToBundle(null);
+        assertNotNull(characteristics);
+        assertTrue(characteristics.isEmpty());
+    }
+
+    @Test
+    public void testConvertProximityRangingCapabilitiesToBundle_fullCapabilities() {
+        assumeTrue(Environment.isSdkNewerThanB());
+        SupplicantWifiRttController.ProximityRangingCapabilities capabilities =
+                getMockPdCapabilities();
+
+        Bundle characteristics = mDut.convertProximityRangingCapabilitiesToBundle(capabilities);
+        assertNotNull(characteristics);
+        assertFalse(characteristics.isEmpty());
+
+        assertEquals(capabilities.maxNumContinuousRangingSeekerSessions,
+                characteristics.getInt(ProximityDetectionCharacteristics
+                        .KEY_INT_MAX_NUM_CONTINUOUS_RANGING_SEEKER_SESSIONS));
+        assertEquals(capabilities.maxNumContinuousRangingAdvertiserSessions,
+                characteristics.getInt(ProximityDetectionCharacteristics
+                        .KEY_INT_MAX_NUM_CONTINUOUS_RANGING_ADVERTISER_SESSIONS));
+        assertEquals(capabilities.isConcurrentIStaRStaOperationSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_CONCURRENT_ISTA_RSTA_OPERATION_SUPPORTED));
+        assertEquals(capabilities.minAllowedRangingInterval80211mc,
+                characteristics.getInt(ProximityDetectionCharacteristics
+                        .KEY_INT_MIN_ALLOWED_RANGING_INTERVAL_80211MC_MS));
+        assertEquals(capabilities.minAllowedRangingIntervalNtbMs,
+                characteristics.getInt(ProximityDetectionCharacteristics
+                        .KEY_INT_MIN_ALLOWED_RANGING_INTERVAL_NTB_MS));
+        assertEquals(capabilities.deviceName,
+                characteristics.getString(ProximityDetectionCharacteristics
+                        .KEY_STRING_PROXIMITY_DETECTION_DEVICE_NAME));
+        assertEquals(capabilities.is80211mcBasedRangingSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_80211MC_BASED_RANGING_SUPPORTED));
+        assertEquals(capabilities.isNtbSecureLtfRangingSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_NTB_SECURE_HE_LTF_RANGING_SUPPORTED));
+        assertEquals(capabilities.isNtbNonSecureLtfRangingSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_NTB_NON_SECURE_HE_LTF_RANGING_SUPPORTED));
+        assertEquals(capabilities.is80211mcBasedIstaRoleSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_80211MC_BASED_ISTA_ROLE));
+        assertEquals(capabilities.is80211mcBasedRstaRoleSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_80211MC_BASED_RSTA_ROLE));
+        assertEquals(capabilities.isNtbIstaRoleSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_NTB_ISTA_ROLE));
+        assertEquals(capabilities.isNtbRstaRoleSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_NTB_RSTA_ROLE));
+        assertEquals(capabilities.maxSupportedPacketBandwidth80211mcBased,
+                characteristics.getInt(ProximityDetectionCharacteristics
+                        .KEY_INT_MAX_SUPPORTED_PACKET_WIDTH_80211MC_BASED));
+        assertEquals(capabilities.maxSupportedPreamble80211mcBased,
+                characteristics.getInt(ProximityDetectionCharacteristics
+                        .KEY_INT_MAX_SUPPORTED_PREAMBLE_80211MC_BASED));
+        assertEquals(capabilities.maxSupportedPacketBandwidthNtb,
+                characteristics.getInt(ProximityDetectionCharacteristics
+                        .KEY_INT_MAX_SUPPORTED_PACKET_WIDTH_NTB));
+        assertEquals(capabilities.maxSupportedPreambleNtb,
+                characteristics.getInt(ProximityDetectionCharacteristics
+                        .KEY_INT_MAX_SUPPORTED_PREAMBLE_NTB));
+        assertEquals(capabilities.isUnauthenticatedPasnModeSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_UNAUTHENTICATED_PASN));
+        assertEquals(capabilities.isAuthenticatedPasnModeSupported,
+                characteristics.getBoolean(ProximityDetectionCharacteristics
+                        .KEY_BOOLEAN_AUTHENTICATED_PASN));
+    }
+
+    @Test
+    public void testPrimaryCmmChangedCallback_nullCmm() throws Exception {
+        assumeTrue(Environment.isSdkNewerThanB());
+        mPrimaryCmmChangedCallbackCaptor.getValue().onChange(null, null);
+        // Nothing should happen, mSupplicantWifiRttController should not be touched
+        verify(mWifiNative, never()).createSupplicantWifiRttController(anyString());
+    }
+
+    @Test
+    public void testPrimaryCmmChangedCallback_sameIface() throws Exception {
+        assumeTrue(Environment.isSdkNewerThanB());
+        setupRttServiceForProximityRanging(); // this sets iface to TEST_PD_INTERFACE_NAME
+
+        ConcreteClientModeManager sameCmm = mock(ConcreteClientModeManager.class);
+        when(sameCmm.getInterfaceName()).thenReturn(TEST_PD_INTERFACE_NAME);
+
+        mPrimaryCmmChangedCallbackCaptor.getValue().onChange(null, sameCmm);
+        // Only the initial creation from setup
+        verify(mWifiNative, times(1)).createSupplicantWifiRttController(eq(TEST_PD_INTERFACE_NAME));
+    }
+
+    @Test
+    public void testPrimaryCmmChangedCallback_newIfaceSuccess() throws Exception {
+        assumeTrue(Environment.isSdkNewerThanB());
+        setupRttServiceForProximityRanging();
+
+        String newIface = "wlan1";
+        ConcreteClientModeManager newCmm = mock(ConcreteClientModeManager.class);
+        when(newCmm.getInterfaceName()).thenReturn(newIface);
+        SupplicantWifiRttController mockNewSupplicantRttController =
+                mock(SupplicantWifiRttController.class);
+        when(mWifiNative.createSupplicantWifiRttController(newIface))
+                .thenReturn(mockNewSupplicantRttController);
+        when(mockNewSupplicantRttController.getName()).thenReturn(newIface);
+        when(mockNewSupplicantRttController.getProximityRangingCapabilities())
+                .thenReturn(mProximityRangingCapabilities);
+        doAnswer(new MockAnswerUtil.AnswerWithArguments() {
+            @SuppressWarnings({"UnusedMethod", "EffectivelyPrivate"})
+            public void answer(byte[] mac) throws Exception {
+                mMockHalMacAddress = mac;
+            }
+        }).when(mockNewSupplicantRttController).setProximityRangingMacAddress(any());
+        doAnswer(new MockAnswerUtil.AnswerWithArguments() {
+            @SuppressWarnings({"UnusedMethod", "EffectivelyPrivate"})
+            public byte[] answer() throws Exception {
+                return mMockHalMacAddress;
+            }
+        }).when(mockNewSupplicantRttController).getProximityRangingMacAddress();
+
+        mPrimaryCmmChangedCallbackCaptor.getValue().onChange(null, newCmm);
+
+        verify(mWifiNative).createSupplicantWifiRttController(newIface);
+        verify(mockNewSupplicantRttController)
+                .registerRttEventCallback(mDut.mSupplicantRttEventCallback);
+        assertEquals(mockNewSupplicantRttController, mDut.mSupplicantWifiRttController);
+    }
+
+    @Test
+    public void testPrimaryCmmChangedCallback_newIfaceFailureCreate() throws Exception {
+        assumeTrue(Environment.isSdkNewerThanB());
+        setupRttServiceForProximityRanging();
+
+        String newIface = "wlan1";
+        ConcreteClientModeManager newCmm = mock(ConcreteClientModeManager.class);
+        when(newCmm.getInterfaceName()).thenReturn(newIface);
+        when(mWifiNative.createSupplicantWifiRttController(newIface)).thenReturn(null);
+
+        mPrimaryCmmChangedCallbackCaptor.getValue().onChange(null, newCmm);
+
+        verify(mWifiNative).createSupplicantWifiRttController(newIface);
+        assertNull(mDut.mSupplicantWifiRttController);
+    }
+
+    @Test
+    public void testPrimaryCmmChangedCallback_newIfaceFailureInit() throws Exception {
+        assumeTrue(Environment.isSdkNewerThanB());
+        setupRttServiceForProximityRanging();
+
+        String newIface = "wlan1";
+        ConcreteClientModeManager newCmm = mock(ConcreteClientModeManager.class);
+        when(newCmm.getInterfaceName()).thenReturn(newIface);
+        SupplicantWifiRttController mockNewSupplicantRttController =
+                mock(SupplicantWifiRttController.class);
+        when(mWifiNative.createSupplicantWifiRttController(newIface))
+                .thenReturn(mockNewSupplicantRttController);
+        when(mockNewSupplicantRttController.getName()).thenReturn(newIface);
+        when(mockNewSupplicantRttController.getProximityRangingCapabilities())
+                .thenReturn(null); // Causes initialization to fail
+
+        mPrimaryCmmChangedCallbackCaptor.getValue().onChange(null, newCmm);
+
+        verify(mWifiNative).createSupplicantWifiRttController(newIface);
+        assertNull(mDut.mSupplicantWifiRttController);
+    }
+
+    @Test
+    public void testProximityRangingMacAddress_withOutRandomizationSupport_OnL2ConnectionEvents()
+            throws Exception {
+        // Setup
+        setupRttServiceForProximityRanging();
+
+        // Trigger L2 connected event
+        mDut.new ClientModeImplListenerInternal().onL2Connected(mMockConcreteClientModeManager);
+
+        // Connected MAC randomization is disabled by default from getMockPdCapabilities()
+        // Expect to use STA MAC address for ranging
+        verify(mMockSupplicantRttController).setProximityRangingMacAddress(
+                eq(TEST_STA_MAC_ADDRESS.toByteArray()));
+        assertEquals(TEST_STA_MAC_ADDRESS, mDut.mConnectedIfaceMacAddress);
+        assertEquals(TEST_STA_MAC_ADDRESS, mDut.mProximityRangingRandomizedMacAddress);
+
+        // Trigger connection end
+        mDut.new ClientModeImplListenerInternal().onConnectionEnd(mMockConcreteClientModeManager);
+
+        assertNull(mDut.mConnectedIfaceMacAddress);
+    }
+
+    @Test
+    public void testProximityRangingMacAddress_withRandomizationSupport()
+            throws Exception {
+        setupRttServiceForProximityRanging();
+        mProximityRangingCapabilities.isConnectedMacRandomizationSupported = true;
+
+        // Trigger L2 connected event
+        mDut.new ClientModeImplListenerInternal().onL2Connected(mMockConcreteClientModeManager);
+
+        // Expect not to use STA MAC address for ranging
+        verify(mMockSupplicantRttController, times(1)).setProximityRangingMacAddress(any());
+        assertNull(mDut.mConnectedIfaceMacAddress);
+        assertNotEquals(TEST_STA_MAC_ADDRESS, mDut.mProximityRangingRandomizedMacAddress);
+
+        // Trigger connection end
+        mDut.new ClientModeImplListenerInternal().onConnectionEnd(mMockConcreteClientModeManager);
+
+        assertNull(mDut.mConnectedIfaceMacAddress);
+    }
+
+    @Test
+    public void testProximityRangingMacAddress_onL2ConnectionEvents_NonMatchingIface()
+            throws Exception {
+        setupRttServiceForProximityRanging();
+        ConcreteClientModeManager nonMatchingCmm = mock(ConcreteClientModeManager.class);
+        when(nonMatchingCmm.getInterfaceName()).thenReturn("otherIface");
+
+        // Trigger L2 connected event for other interface
+        mDut.new ClientModeImplListenerInternal().onL2Connected(nonMatchingCmm);
+
+        // Verify nothing changed
+        assertNull(mDut.mConnectedIfaceMacAddress);
+        verify(nonMatchingCmm, never()).getConnectionInfo();
+
+        // Trigger connection end for other interface
+        mDut.mConnectedIfaceMacAddress = TEST_STA_MAC_ADDRESS;
+        mDut.new ClientModeImplListenerInternal().onConnectionEnd(nonMatchingCmm);
+
+        // Verify it wasn't cleared
+        assertEquals(TEST_STA_MAC_ADDRESS, mDut.mConnectedIfaceMacAddress);
+    }
+
+    @Test
+    public void testProximityRangingMacAddress_onL2Connected_OngoingRanging()
+            throws Exception {
+        setupRttServiceForProximityRanging();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        // Start ranging
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        // Capture MAC address updates before connection
+        verify(mMockSupplicantRttController, times(1)).setProximityRangingMacAddress(any());
+
+        // Trigger L2 connected event
+        mDut.new ClientModeImplListenerInternal().onL2Connected(mMockConcreteClientModeManager);
+
+        // Verify mConnectedIfaceMacAddress is updated but setProximityRangingMacAddress NOT called
+        assertEquals(TEST_STA_MAC_ADDRESS, mDut.mConnectedIfaceMacAddress);
+        verify(mMockSupplicantRttController, times(1)).setProximityRangingMacAddress(any());
+    }
+
+    @Test
+    public void testProximityRangingMacAddress_onL2Connected_InvalidMac()
+            throws Exception {
+        setupRttServiceForProximityRanging();
+
+        // Scenario 1: Default MAC address
+        when(mMockWifiInfo.getMacAddress()).thenReturn(WifiInfo.DEFAULT_MAC_ADDRESS);
+        mDut.new ClientModeImplListenerInternal().onL2Connected(mMockConcreteClientModeManager);
+        assertNull(mDut.mConnectedIfaceMacAddress);
+
+        // Scenario 2: Empty MAC address
+        when(mMockWifiInfo.getMacAddress()).thenReturn("");
+        mDut.new ClientModeImplListenerInternal().onL2Connected(mMockConcreteClientModeManager);
+        assertNull(mDut.mConnectedIfaceMacAddress);
+
+        // Scenario 3: Null MAC address
+        when(mMockWifiInfo.getMacAddress()).thenReturn(null);
+        mDut.new ClientModeImplListenerInternal().onL2Connected(mMockConcreteClientModeManager);
+        assertNull(mDut.mConnectedIfaceMacAddress);
+    }
+
+    @Test
+    public void testIdentifierRandomizationOnSessionEnd() throws Exception {
+        setupRttServiceForProximityRanging();
+        IContinuousRangingResultCallback callback = mock(IContinuousRangingResultCallback.class);
+        IBinder binder = mock(IBinder.class);
+        when(callback.asBinder()).thenReturn(binder);
+        when(mMockSupplicantRttController.rangeRequest(anyInt(), any(RangingRequest.class)))
+                .thenReturn(true);
+
+        final String initialDeviceName = mDut.mProximityRangingDeviceName;
+        final MacAddress initialMacAddress = mDut.mProximityRangingRandomizedMacAddress;
+        assertFalse(TextUtils.isEmpty(initialDeviceName));
+        assertNotNull(initialMacAddress);
+
+        // Trigger
+        RangingRequest request = RttTestUtils.getDummyContinuousRangingRequest();
+        mDut.startContinuousRanging(binder, mPackageName, mFeatureId, mDefaultWs, request,
+                callback);
+        mMockLooper.dispatchAll();
+
+        // Stop the ranging
+        mDut.stopContinuousRanging(mDefaultWs);
+        mMockLooper.dispatchAll();
+
+        // Verify
+        assertFalse(TextUtils.isEmpty(mDut.mProximityRangingDeviceName));
+        assertNotEquals(initialDeviceName, mDut.mProximityRangingDeviceName);
+        assertNotEquals(initialMacAddress, mDut.mProximityRangingRandomizedMacAddress);
+        verify(mMockSupplicantRttController).setProximityRangingDeviceName(
+                eq(mDut.mProximityRangingDeviceName));
+        verify(mMockSupplicantRttController).setProximityRangingMacAddress(
+                eq(mDut.mProximityRangingRandomizedMacAddress.toByteArray()));
     }
 }

@@ -21,11 +21,15 @@ import static android.net.wifi.aware.WifiAwareNetworkSpecifier.NETWORK_SPECIFIER
 import static android.net.wifi.aware.WifiAwareNetworkSpecifier.NETWORK_SPECIFIER_TYPE_OOB;
 import static android.net.wifi.aware.WifiAwareNetworkSpecifier.NETWORK_SPECIFIER_TYPE_OOB_ANY_PEER;
 
+import android.net.wifi.SupplicantState;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiScanner;
 import android.net.wifi.aware.WifiAwareManager;
 import android.net.wifi.aware.WifiAwareNetworkSpecifier;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.SparseArray;
+import android.util.SparseBooleanArray;
 import android.util.SparseIntArray;
 import android.util.SparseLongArray;
 
@@ -146,9 +150,48 @@ public class WifiAwareMetrics {
     private final SparseArray<String> mDiscoveryAttributionTagMap = new SparseArray<>();
     private final SparseIntArray mDiscoveryUidMap = new SparseIntArray();
     private boolean mInstantModeEnabled;
+    private boolean mCurrentScreenState = true;
+    private Boolean mIs5gAwareSupported = null;
+
+    // peer found data
+    private static class PeerFoundSession {
+        int mRole;
+        int mPeerFoundResult;
+        long mPubSubStartTime;
+        long mFromPubSubLatencyMs;
+        long mFromDiscoveryLatencyMs;
+        int mRangingIndication;
+        boolean mHasEverScreenOff;
+        boolean mIs5gAwareSupported;
+        boolean mIsStaConnected;
+        int mStaFrequency;
+    }
+    private Map<Integer, PeerFoundSession> mPeerFoundByClientId = new HashMap<>();
+    private final SparseBooleanArray mHasEverScreenOffMap = new SparseBooleanArray();
 
     public WifiAwareMetrics(Clock clock) {
         mClock = clock;
+    }
+
+    /**
+     *  Set screen state changing.
+     */
+    public void handleScreenStateChanged(boolean screenOn) {
+        mCurrentScreenState = screenOn;
+        if (!screenOn) {
+            for (int i = 0; i < mHasEverScreenOffMap.size(); i++) {
+                mHasEverScreenOffMap.put(mHasEverScreenOffMap.keyAt(i), true);
+            }
+        }
+    }
+
+    /**
+     *  Set is Aware supported on band.
+     */
+    public void setIsAwareBandSupported(int band, boolean supported) {
+       if (band == WifiScanner.WIFI_BAND_5_GHZ_WITH_DFS) {
+            mIs5gAwareSupported = supported;
+        }
     }
 
     /**
@@ -221,7 +264,8 @@ public class WifiAwareMetrics {
      * Push information about a new attach session.
      */
     public void recordAttachSession(int uid, boolean usesIdentityCallback,
-            SparseArray<WifiAwareClientState> clients, int callerType, String attributionTag) {
+            SparseArray<WifiAwareClientState> clients, int callerType, String attributionTag,
+            int clientId) {
         // count the number of clients with the specific uid
         int currentConcurrentCount = 0;
         for (int i = 0; i < clients.size(); ++i) {
@@ -240,6 +284,8 @@ public class WifiAwareMetrics {
             data.mMaxConcurrentAttaches = Math.max(data.mMaxConcurrentAttaches,
                     currentConcurrentCount);
             recordAttachStatus(NanStatusCode.SUCCESS, callerType, attributionTag, uid);
+            // Set screen state
+            mHasEverScreenOffMap.put(clientId, !mCurrentScreenState);
         }
     }
 
@@ -258,11 +304,12 @@ public class WifiAwareMetrics {
     /**
      * Push duration information of an attach session.
      */
-    public void recordAttachSessionDuration(long creationTime) {
+    public void recordAttachSessionDuration(long creationTime, int clientId) {
         synchronized (mLock) {
             MetricsUtils.addValueToLogHistogram(mClock.getElapsedSinceBootMillis() - creationTime,
                     mHistogramAttachDuration, DURATION_LOG_HISTOGRAM);
         }
+        mHasEverScreenOffMap.delete(clientId);
     }
 
     /**
@@ -1042,5 +1089,96 @@ public class WifiAwareMetrics {
         }
 
         return protoArray;
+    }
+
+    /**
+     * Initial peer found data at publish and subscribe start
+     */
+    public void recordPeerFoundStart(int clientId, boolean isPublish) {
+        synchronized (mLock) {
+            PeerFoundSession data = mPeerFoundByClientId.get(clientId);
+            if (data == null) {
+                data = new PeerFoundSession();
+                mPeerFoundByClientId.put(clientId, data);
+            }
+            data.mPubSubStartTime = mClock.getElapsedSinceBootMillis();
+            data.mPeerFoundResult =
+                WifiStatsLog.WIFI_AWARE_PEER_FOUND_REPORTED__RESULT__RESULT_UNKNOWN;
+            data.mRole = isPublish ? WifiStatsLog.WIFI_AWARE_PEER_FOUND_REPORTED__ROLE__PUBLISH
+                : WifiStatsLog.WIFI_AWARE_PEER_FOUND_REPORTED__ROLE__SUBSCRIBE;
+        }
+    }
+
+    /**
+     * Store peer found status and report until termination
+     */
+    public void updatePeerFoundResult(int clientId, int sessionId, int result,
+            int rangingIndication, WifiInfo wifiInfo) {
+        PeerFoundSession data = mPeerFoundByClientId.get(clientId);
+        if (data == null) {
+            Log.e(TAG, "No peer found data for clientId= " + clientId);
+            return;
+        }
+        if (data.mPeerFoundResult
+                == WifiStatsLog.WIFI_AWARE_PEER_FOUND_REPORTED__RESULT__PEER_FOUND) {
+            Log.v(TAG, "Peer Found already reported for clientId= " + clientId
+                    + ", sessionId= " +  sessionId);
+            return;
+        }
+        Log.v(TAG, "Update peer found for clientId= " + clientId
+                + ", sessionId= " +  sessionId
+                + ", role= " + data.mRole
+                + ", result= " + result
+                + ", rangingIndication= " + rangingIndication);
+
+        // Aware info
+        long currentTimeMs = mClock.getElapsedSinceBootMillis();
+        data.mFromPubSubLatencyMs = currentTimeMs - data.mPubSubStartTime;
+        data.mFromDiscoveryLatencyMs = currentTimeMs - mDiscoveryStartTimeMsMap.get(sessionId, 0);
+        data.mPeerFoundResult = result;
+        data.mHasEverScreenOff = mHasEverScreenOffMap.get(clientId, !mCurrentScreenState);
+        data.mIs5gAwareSupported = mIs5gAwareSupported == null ? false : mIs5gAwareSupported;
+        data.mRangingIndication = data.mRangingIndication | rangingIndication;
+        // Wifi STA info
+        data.mIsStaConnected = wifiInfo.getSupplicantState() == SupplicantState.COMPLETED;
+        data.mStaFrequency = data.mIsStaConnected ? wifiInfo.getFrequency() : -1;
+    }
+
+    /**
+     * Report whether peer is found and wifi status information
+     */
+    public void recordPeerFoundResult(int clientId, int sessionId, WifiInfo wifiInfo) {
+        PeerFoundSession data = mPeerFoundByClientId.get(clientId);
+        if (data == null) {
+            Log.e(TAG, "No peer found data for clientId= " + clientId);
+            return;
+        }
+        // Never found peer, update SESSION_TERMINATED status
+        if (data.mPeerFoundResult
+                == WifiStatsLog.WIFI_AWARE_PEER_FOUND_REPORTED__RESULT__RESULT_UNKNOWN) {
+            updatePeerFoundResult(clientId, sessionId,
+                    WifiStatsLog.WIFI_AWARE_PEER_FOUND_REPORTED__RESULT__SESSION_TERMINATED,
+                    0, wifiInfo);
+        }
+        Log.v(TAG, "Report peer found result for clientId= " + clientId
+                + ", sessionId= " + sessionId + "role= " + data.mRole
+                + ", peerFoundResult= " + data.mPeerFoundResult);
+        // Log final peer found status
+        int[] uid = new int[]{mDiscoveryUidMap.get(sessionId, 0)};
+        String[] tag = new String[]{mDiscoveryAttributionTagMap.get(sessionId)};
+        WifiStatsLog.write(WifiStatsLog.WIFI_AWARE_PEER_FOUND_REPORTED,
+                uid,
+                tag,
+                data.mRole,
+                data.mPeerFoundResult,
+                data.mFromPubSubLatencyMs,
+                data.mFromDiscoveryLatencyMs,
+                data.mRangingIndication,
+                data.mIsStaConnected,
+                data.mStaFrequency,
+                data.mIs5gAwareSupported,
+                data.mHasEverScreenOff
+        );
+        mPeerFoundByClientId.remove(clientId);
     }
 }

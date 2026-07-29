@@ -110,6 +110,7 @@ import android.net.wifi.WifiManager.NetworkRequestMatchCallback;
 import android.net.wifi.WifiManager.NetworkRequestUserSelectionCallback;
 import android.net.wifi.WifiManager.OnWifiUsabilityStatsListener;
 import android.net.wifi.WifiManager.ScanResultsCallback;
+import android.net.wifi.WifiManager.ScoreUpdateObserver;
 import android.net.wifi.WifiManager.SoftApCallback;
 import android.net.wifi.WifiManager.SubsystemRestartTrackingCallback;
 import android.net.wifi.WifiManager.SuggestionConnectionStatusListener;
@@ -135,6 +136,8 @@ import android.os.RemoteException;
 import android.os.connectivity.WifiActivityEnergyInfo;
 import android.os.test.TestLooper;
 import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.security.advancedprotection.AdvancedProtectionFeature;
+import android.security.advancedprotection.AdvancedProtectionManager;
 import android.util.ArraySet;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
@@ -204,6 +207,7 @@ public class WifiManagerTest {
             new TetheringManager.TetheringRequest.Builder(TetheringManager.TETHERING_WIFI).build();
     private static final String TEST_INTERFACE_NAME = "test-wlan0";
     private static final int TEST_INTERNAL_SCORE = 50;
+    private static final int TEST_SESSION_ID = 12345;
 
     @Mock Context mContext;
     @Mock android.net.wifi.IWifiManager mWifiService;
@@ -217,6 +221,8 @@ public class WifiManagerTest {
     @Mock SuggestionConnectionStatusListener mSuggestionConnectionListener;
     @Mock
     WifiManager.LocalOnlyConnectionFailureListener mLocalOnlyConnectionFailureListener;
+    @Mock
+    WifiManager.LocalOnlyDisconnectionStatusListener mLocalOnlyDisconnectionStatusListener;
     @Mock Runnable mRunnable;
     @Mock Executor mExecutor;
     @Mock Executor mAnotherExecutor;
@@ -224,6 +230,7 @@ public class WifiManagerTest {
     @Mock WifiConnectedNetworkScorer mWifiConnectedNetworkScorer;
     @Mock SuggestionUserApprovalStatusListener mSuggestionUserApprovalStatusListener;
     @Mock ActiveCountryCodeChangedCallback mActiveCountryCodeChangedCallback;
+    @Mock IScoreUpdateObserver mMockIScoreUpdateObserver;
 
     private Handler mHandler;
     private TestLooper mLooper;
@@ -232,7 +239,7 @@ public class WifiManagerTest {
     private ScanResultsCallback mScanResultsCallback;
     private CoexCallback mCoexCallback;
     private WifiManager.WifiStateChangedListener mWifiStateChangedListener;
-    private WifiManager.RestrictAutoJoinToSubIdCallback
+    private WifiManager.RestrictAutoJoinToSubscriptionIdCallback
             mRestrictAutoJoinToSubIdCallback;
     private SubsystemRestartTrackingCallback mRestartCallback;
     private int mRestartCallbackMethodRun = 0; // 1: restarting, 2: restarted
@@ -334,14 +341,15 @@ public class WifiManagerTest {
             }
         };
         mWifiStateChangedListener = () -> mRunnable.run();
-        mRestrictAutoJoinToSubIdCallback = new WifiManager.RestrictAutoJoinToSubIdCallback() {
+        mRestrictAutoJoinToSubIdCallback =
+                new WifiManager.RestrictAutoJoinToSubscriptionIdCallback() {
             @Override
             public void onRestrictionStarted(int subscriptionId) {
                 mRunnable.run();
             }
 
             @Override
-            public void onRestrictionStopped() {
+            public void onRestrictionsStopped() {
                 mRunnable.run();
             }
         };
@@ -355,6 +363,9 @@ public class WifiManagerTest {
             };
             AttributionSource attributionSource = mock(AttributionSource.class);
             when(mContext.getAttributionSource()).thenReturn(attributionSource);
+        }
+        if (SdkLevel.isAtLeastU()) {
+            when(mContext.createDeviceContext(anyInt())).thenReturn(mContext);
         }
         mRestartCallback = new SubsystemRestartTrackingCallback() {
             @Override
@@ -809,11 +820,11 @@ public class WifiManagerTest {
         expectedSsids.add(WifiSsid.fromString("\"TEST_SSID\""));
         mWifiManager.setSsidsAllowlist(new ArraySet<>(expectedSsids));
         verify(mWifiService).setSsidsAllowlist(any(),
-                argThat(a -> a.getList().equals(expectedSsids)));
+                argThat(a -> a.equals(expectedSsids)));
 
         // test empty set
         mWifiManager.setSsidsAllowlist(Collections.emptySet());
-        verify(mWifiService).setSsidsAllowlist(any(), argThat(a -> a.getList().isEmpty()));
+        verify(mWifiService).setSsidsAllowlist(any(), argThat(List::isEmpty));
     }
 
     /**
@@ -2557,18 +2568,18 @@ public class WifiManagerTest {
      * Verify client provided callback is being called to the right callback.
      */
     @Test
-    public void testAddRestrictAutoJoinToSubIdCallbackAndReceiveEvent() throws Exception {
+    public void testAddRestrictAutoJoinToSubscriptionIdCallbackAndReceiveEvent() throws Exception {
         assumeTrue(SdkLevel.isAtLeastS());
         assertThrows(NullPointerException.class,
-                () -> mWifiManager.addRestrictAutoJoinToSubIdCallback(mExecutor, null));
+                () -> mWifiManager.addRestrictAutoJoinToSubscriptionIdCallback(mExecutor, null));
         assertThrows(NullPointerException.class,
-                () -> mWifiManager.addRestrictAutoJoinToSubIdCallback(
+                () -> mWifiManager.addRestrictAutoJoinToSubscriptionIdCallback(
                         null, mRestrictAutoJoinToSubIdCallback));
 
 
         ArgumentCaptor<IRestrictAutoJoinToSubIdCallback.Stub> callbackCaptor =
                 ArgumentCaptor.forClass(IRestrictAutoJoinToSubIdCallback.Stub.class);
-        mWifiManager.addRestrictAutoJoinToSubIdCallback(new SynchronousExecutor(),
+        mWifiManager.addRestrictAutoJoinToSubscriptionIdCallback(new SynchronousExecutor(),
                 mRestrictAutoJoinToSubIdCallback);
         verify(mWifiService).addRestrictAutoJoinToSubIdCallback(callbackCaptor.capture());
         callbackCaptor.getValue().onRestrictionStarted(1);
@@ -2579,12 +2590,12 @@ public class WifiManagerTest {
      * Verify client removeRestrictAutoJoinToSubIdCallback.
      */
     @Test
-    public void testRemoveUnknownRestrictAutoJoinToSubIdCallback() throws Exception {
+    public void testRemoveUnknownRestrictAutoJoinToSubscriptionIdCallback() throws Exception {
         assumeTrue(SdkLevel.isAtLeastS());
         assertThrows(NullPointerException.class,
-                () -> mWifiManager.removeRestrictAutoJoinToSubIdCallback(null));
+                () -> mWifiManager.removeRestrictAutoJoinToSubscriptionIdCallback(null));
 
-        mWifiManager.removeRestrictAutoJoinToSubIdCallback(
+        mWifiManager.removeRestrictAutoJoinToSubscriptionIdCallback(
                 mRestrictAutoJoinToSubIdCallback);
         verify(mWifiService, never()).removeRestrictAutoJoinToSubIdCallback(any());
     }
@@ -3453,6 +3464,94 @@ public class WifiManagerTest {
         verify(mWifiConnectedNetworkScorer).onSetScoreUpdateObserver(any());
     }
 
+    private ScoreUpdateObserver getScoreUpdateObserver() throws Exception {
+        mWifiManager.setWifiConnectedNetworkScorer(new SynchronousExecutor(),
+                mWifiConnectedNetworkScorer);
+        ArgumentCaptor<IWifiConnectedNetworkScorer.Stub> scorerCaptor =
+                ArgumentCaptor.forClass(IWifiConnectedNetworkScorer.Stub.class);
+        verify(mWifiService).setWifiConnectedNetworkScorer(any(IBinder.class),
+                scorerCaptor.capture());
+        scorerCaptor.getValue().onSetScoreUpdateObserver(mMockIScoreUpdateObserver);
+        mLooper.dispatchAll();
+        ArgumentCaptor<ScoreUpdateObserver> scoreUpdateObserverCaptor =
+                ArgumentCaptor.forClass(ScoreUpdateObserver.class);
+        verify(mWifiConnectedNetworkScorer)
+                .onSetScoreUpdateObserver(scoreUpdateObserverCaptor.capture());
+        return scoreUpdateObserverCaptor.getValue();
+    }
+
+    @Test
+    public void scoreUpdateObserverProxy_notifyScoreUpdate() throws Exception {
+        ScoreUpdateObserver scoreUpdateObserver = getScoreUpdateObserver();
+
+        scoreUpdateObserver.notifyScoreUpdate(TEST_SESSION_ID, TEST_INTERNAL_SCORE);
+
+        verify(mMockIScoreUpdateObserver)
+                .notifyScoreUpdate(eq(TEST_SESSION_ID), eq(TEST_INTERNAL_SCORE));
+    }
+
+    @Test
+    public void scoreUpdateObserverProxy_notifyStatusUpdate() throws Exception {
+        ScoreUpdateObserver scoreUpdateObserver = getScoreUpdateObserver();
+
+        scoreUpdateObserver.notifyStatusUpdate(TEST_SESSION_ID, true);
+
+        verify(mMockIScoreUpdateObserver)
+                .notifyStatusUpdate(eq(TEST_SESSION_ID), eq(true));
+    }
+
+    @Test
+    public void scoreUpdateObserverProxy_triggerUpdateOfWifiUsabilityStats() throws Exception {
+        ScoreUpdateObserver scoreUpdateObserver = getScoreUpdateObserver();
+
+        scoreUpdateObserver.triggerUpdateOfWifiUsabilityStats(TEST_SESSION_ID);
+
+        verify(mMockIScoreUpdateObserver)
+                .triggerUpdateOfWifiUsabilityStats(eq(TEST_SESSION_ID));
+    }
+
+
+    @Test
+    public void scoreUpdateObserverProxy_requestNudOperation() throws Exception {
+        ScoreUpdateObserver scoreUpdateObserver = getScoreUpdateObserver();
+
+        scoreUpdateObserver.requestNudOperation(TEST_SESSION_ID);
+
+        verify(mMockIScoreUpdateObserver)
+                .requestNudOperation(eq(TEST_SESSION_ID));
+    }
+
+
+    @Test
+    public void scoreUpdateObserverProxy_blockCurrentBssid() throws Exception {
+        ScoreUpdateObserver scoreUpdateObserver = getScoreUpdateObserver();
+
+        scoreUpdateObserver.blocklistCurrentBssid(TEST_SESSION_ID);
+
+        verify(mMockIScoreUpdateObserver)
+                .blocklistCurrentBssid(eq(TEST_SESSION_ID));
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_FEED_MORE_DATA_TO_EXTERNAL_SCORER)
+    @Test
+    public void scoreUpdateObserverProxy_UnblockAllBssids() throws Exception {
+        ScoreUpdateObserver scoreUpdateObserver = getScoreUpdateObserver();
+
+        scoreUpdateObserver.unblockAllBssids();
+
+        verify(mMockIScoreUpdateObserver).unblockAllBssids();
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_FEED_MORE_DATA_TO_EXTERNAL_SCORER)
+    @Test
+    public void scoreUpdateObserverProxy_setPreEvaluationEnabled() throws Exception {
+        ScoreUpdateObserver scoreUpdateObserver = getScoreUpdateObserver();
+
+        scoreUpdateObserver.setPreEvaluationEnabled(true);
+
+        verify(mMockIScoreUpdateObserver).setPreEvaluationEnabled(eq(true));
+    }
+
     /**
      * Verify that Wi-Fi connected scorer receives session ID when onStart/onStop methods
      * are called.
@@ -4159,7 +4258,7 @@ public class WifiManagerTest {
     }
 
     @Test
-    public void testAddRemoveLocaOnlyConnectionListener() throws RemoteException {
+    public void testAddRemoveLocalOnlyConnectionListener() throws RemoteException {
         assertThrows(IllegalArgumentException.class, () -> mWifiManager
                 .addLocalOnlyConnectionFailureListener(null, mLocalOnlyConnectionFailureListener));
         assertThrows(IllegalArgumentException.class, () -> mWifiManager
@@ -4170,6 +4269,27 @@ public class WifiManagerTest {
                 nullable(String.class));
         mWifiManager.removeLocalOnlyConnectionFailureListener(mLocalOnlyConnectionFailureListener);
         verify(mWifiService).removeLocalOnlyConnectionStatusListener(any(), eq(TEST_PACKAGE_NAME));
+    }
+
+    @Test
+    public void testAddRemoveLocalOnlyDisconnectionListener() throws RemoteException {
+        // test addLocalOnlyDisconnectionStatusListener
+        assertThrows(NullPointerException.class, () -> mWifiManager
+                .addLocalOnlyDisconnectionStatusListener(null,
+                        mLocalOnlyDisconnectionStatusListener));
+        assertThrows(NullPointerException.class, () -> mWifiManager
+                .addLocalOnlyDisconnectionStatusListener(mExecutor, null));
+        mWifiManager.addLocalOnlyDisconnectionStatusListener(mExecutor,
+                mLocalOnlyDisconnectionStatusListener);
+        verify(mWifiService).addLocalOnlyDisconnectionStatusListener(any(), eq(TEST_PACKAGE_NAME));
+
+        // test removeLocalOnlyDisconnectionStatusListener
+        assertThrows(NullPointerException.class, () -> mWifiManager
+                .removeLocalOnlyDisconnectionStatusListener(null));
+        mWifiManager.removeLocalOnlyDisconnectionStatusListener(
+                mLocalOnlyDisconnectionStatusListener);
+        verify(mWifiService).removeLocalOnlyDisconnectionStatusListener(any(),
+                eq(TEST_PACKAGE_NAME));
     }
 
     /**
@@ -4725,5 +4845,24 @@ public class WifiManagerTest {
         // Call and verify.
         mWifiManager.getSupportedInterfaceNames(executor, resultsCallback);
         verify(mWifiService).getSupportedInterfaceNames(any(IListListener.Stub.class));
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_DISABLE_INSECURE_WIFI_AUTOJOIN_WHEN_AAPM_ON)
+    @Test
+    public void testGetAvailableAdvancedProtectionFeaturesWhenFlagIsEnabled() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        assumeTrue(Flags.disableInsecureWifiAutojoinWhenAapmOn());
+        List<AdvancedProtectionFeature> features =
+                mWifiManager.getAvailableAdvancedProtectionFeatures();
+        assertNotNull(features);
+        boolean isDisableInSecureWifiAutojoinSupported = false;
+        for (AdvancedProtectionFeature feature : features) {
+            if (feature.getId()
+                    == AdvancedProtectionManager.FEATURE_ID_DISALLOW_INSECURE_WIFI_AUTOJOIN) {
+                isDisableInSecureWifiAutojoinSupported = true;
+                break;
+            }
+        }
+        assertTrue(isDisableInSecureWifiAutojoinSupported);
     }
 }

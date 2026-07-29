@@ -22,11 +22,13 @@ import static com.android.server.wifi.WifiConfigurationTestUtil.SECURITY_PSK;
 import static com.android.server.wifi.TestUtil.createCapabilityBitset;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.Mockito.*;
 
 import android.net.MacAddress;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
+import android.net.wifi.util.Environment;
 import android.util.LocalLog;
 import android.util.Pair;
 
@@ -37,6 +39,7 @@ import com.android.server.wifi.WifiNetworkSelectorTestUtil.ScanDetailsAndWifiCon
 import com.android.server.wifi.entitlement.PseudonymInfo;
 import com.android.server.wifi.hotspot2.PasspointNetworkNominateHelper;
 import com.android.server.wifi.util.WifiPermissionsUtil;
+import com.android.wifi.flags.Flags;
 
 import org.junit.After;
 import org.junit.Before;
@@ -45,6 +48,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.MockitoSession;
+import org.mockito.quality.Strictness;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -61,9 +65,12 @@ public class SavedNetworkNominatorTest extends WifiBaseTest {
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
-        mStaticMockSession = mockitoSession()
+        mStaticMockSession = mockitoSession().strictness(Strictness.LENIENT)
                 .mockStatic(WifiInjector.class)
+                .mockStatic(Flags.class)
                 .startMocking();
+        lenient().when(Flags.disableInsecureWifiAutojoinWhenAapmOn())
+                .thenReturn(true);
         lenient().when(WifiInjector.getInstance()).thenReturn(mWifiInjector);
         when(mWifiInjector.getActiveModeWarden()).thenReturn(mActiveModeWarden);
         when(mWifiInjector.getWifiGlobals()).thenReturn(mWifiGlobals);
@@ -77,7 +84,8 @@ public class SavedNetworkNominatorTest extends WifiBaseTest {
         mLocalLog = new LocalLog(512);
         mSavedNetworkNominator = new SavedNetworkNominator(mWifiConfigManager,
                 mLocalLog, mWifiCarrierInfoManager,
-                mWifiPseudonymManager, mWifiPermissionsUtil, mWifiNetworkSuggestionsManager);
+                mWifiPseudonymManager, mWifiPermissionsUtil, mWifiNetworkSuggestionsManager,
+                mWifiDeviceStateChangeManager);
         when(mWifiCarrierInfoManager.isSimReady(anyInt())).thenReturn(true);
         when(mWifiCarrierInfoManager.getBestMatchSubscriptionId(any())).thenReturn(VALID_SUBID);
         when(mWifiCarrierInfoManager.requiresImsiEncryption(VALID_SUBID)).thenReturn(true);
@@ -86,7 +94,7 @@ public class SavedNetworkNominatorTest extends WifiBaseTest {
         when(mWifiNetworkSuggestionsManager
                 .shouldBeIgnoredBySecureSuggestionFromSameCarrier(any(), any()))
                 .thenReturn(false);
-
+        when(Flags.multiUserWifiEnhancement()).thenReturn(false);
     }
 
     /** Cleans up test. */
@@ -115,6 +123,7 @@ public class SavedNetworkNominatorTest extends WifiBaseTest {
     @Mock private PasspointNetworkNominateHelper mPasspointNetworkNominateHelper;
     @Mock private WifiPermissionsUtil mWifiPermissionsUtil;
     @Mock private WifiNetworkSuggestionsManager mWifiNetworkSuggestionsManager;
+    @Mock private WifiDeviceStateChangeManager mWifiDeviceStateChangeManager;
     private @Mock WifiInjector mWifiInjector;
     private @Mock ActiveModeWarden mActiveModeWarden;
     private @Mock ClientModeManager mPrimaryClientModeManager;
@@ -294,6 +303,29 @@ public class SavedNetworkNominatorTest extends WifiBaseTest {
         );
         verify(mOnConnectableListener).onConnectable(scanDetail1, configuration1);
         verify(mOnConnectableListener, never()).onConnectable(scanDetail2, configuration2);
+    }
+
+    /**
+     * Ensure that we do not nominate passpoint networks from wifi network suggestions.
+     */
+    @Test
+    public void ignorePasspointNetworksFromWifiNetworkSuggestion() {
+        ScanDetail scanDetail1 = mock(ScanDetail.class);
+        List<ScanDetail> scanDetails = Arrays.asList(scanDetail1);
+        WifiConfiguration configuration1 = mock(WifiConfiguration.class);
+        WifiConfiguration configuration2 = mock(WifiConfiguration.class);
+        configuration1.allowAutojoin = false;
+        configuration1.fromWifiNetworkSuggestion = true;
+        configuration2.allowAutojoin = true;
+        configuration2.fromWifiNetworkSuggestion = false;
+        List<Pair<ScanDetail, WifiConfiguration>> passpointCandidates =
+                Arrays.asList(Pair.create(scanDetail1, configuration1),
+                Pair.create(scanDetail1, configuration2));
+        mSavedNetworkNominator.nominateNetworks(
+                scanDetails, passpointCandidates, false, true, true, Collections.emptySet(),
+                mOnConnectableListener
+        );
+        verify(mOnConnectableListener).onConnectable(any(), any());
     }
 
     /**
@@ -522,5 +554,87 @@ public class SavedNetworkNominatorTest extends WifiBaseTest {
                 mOnConnectableListener
         );
         verify(mOnConnectableListener, never()).onConnectable(any(), any());
+    }
+
+    private WifiConfiguration generateMockedWifiConfigurationForNetworkSelection(int networkId) {
+        WifiConfiguration configuration = mock(WifiConfiguration.class);
+        configuration.networkId = networkId;
+        configuration.allowAutojoin = true;
+        WifiConfiguration.NetworkSelectionStatus mockedStatus =
+                mock(WifiConfiguration.NetworkSelectionStatus.class);
+        when(configuration.getNetworkSelectionStatus())
+                .thenReturn(mockedStatus);
+        when(mockedStatus.isNetworkEnabled()).thenReturn(true);
+        when(configuration.getBssidAllowlistInternal()).thenReturn(null);
+        when(mWifiConfigManager.getConfiguredNetwork(eq(networkId))).thenReturn(configuration);
+        return configuration;
+    }
+
+    /**
+     * Test all matched config will be selected to candidates.
+     */
+    @Test
+    public void returnCandidatesWhenTwoMatchConfigs() {
+        assumeTrue(Environment.isSdkNewerThanB());
+        when(Flags.multiUserWifiEnhancement()).thenReturn(true);
+        ScanDetail scanDetail1 = mock(ScanDetail.class);
+        List<ScanDetail> scanDetails = Arrays.asList(scanDetail1);
+        WifiConfiguration configuration1 = generateMockedWifiConfigurationForNetworkSelection(1);
+        WifiConfiguration configuration2 = generateMockedWifiConfigurationForNetworkSelection(2);
+        when(mWifiConfigManager.getSavedNetworksForScanDetail(eq(scanDetail1)))
+                .thenReturn(Arrays.asList(configuration1, configuration2));
+        mSavedNetworkNominator.nominateNetworks(
+                scanDetails, null, false, true, true, Collections.emptySet(),
+                mOnConnectableListener);
+        verify(mOnConnectableListener).onConnectable(scanDetail1, configuration1);
+        verify(mOnConnectableListener).onConnectable(scanDetail1, configuration2);
+    }
+
+    /**
+     * Verifies that auto-join is correctly handled based on the
+     * isAutoJoinInAdvancedProtectionModeEnabled flag when AAPM is active.
+     * 1. If AAPM is off, auto-join should be allowed regardless of the flag.
+     * 2. If AAPM is on and the flag is false, auto-join should be disallowed.
+     * 3. If AAPM is on and the flag is true, auto-join should be allowed.
+     */
+    @Test
+    public void testAapmModeAndAllowedAutoJoinInAdvancedProtection() {
+        assumeTrue(Environment.isSdkAtLeastC());
+        String[] ssids = {"\"test1\""};
+        String[] bssids = {"6c:f3:7f:ae:8c:f3"};
+        int[] freqs = {2470};
+        String[] caps = {"[ESS]"};
+        int[] levels = {RSSI_LEVEL};
+        int[] securities = {SECURITY_NONE};
+
+        ScanDetailsAndWifiConfigs scanDetailsAndConfigs =
+                WifiNetworkSelectorTestUtil.setupScanDetailsAndConfigStore(ssids, bssids,
+                        freqs, caps, levels, securities, mWifiConfigManager, mClock);
+        List<ScanDetail> scanDetails = scanDetailsAndConfigs.getScanDetails();
+        WifiConfiguration[] savedConfigs = scanDetailsAndConfigs.getWifiConfigs();
+
+        // Test auto-join is allowed when AAPM is off.
+        when(mWifiDeviceStateChangeManager.isAapmEnabled()).thenReturn(false);
+        savedConfigs[0].setAutoJoinInAdvancedProtectionModeEnabled(false);
+        mSavedNetworkNominator.nominateNetworks(
+                scanDetails, null, false, true, true, Collections.emptySet(),
+                mOnConnectableListener);
+        verify(mOnConnectableListener).onConnectable(any(), any());
+        reset(mOnConnectableListener);
+
+        // Test auto-join is not allowed when AAPM is on and auto-join is disallowed.
+        when(mWifiDeviceStateChangeManager.isAapmEnabled()).thenReturn(true);
+        mSavedNetworkNominator.nominateNetworks(
+                scanDetails, null, false, true, true, Collections.emptySet(),
+                mOnConnectableListener);
+        verify(mOnConnectableListener, never()).onConnectable(any(), any());
+        reset(mOnConnectableListener);
+
+        // Test auto-join is allowed when AAPM is on and auto-join is allowed.
+        savedConfigs[0].setAutoJoinInAdvancedProtectionModeEnabled(true);
+        mSavedNetworkNominator.nominateNetworks(
+                scanDetails, null, false, true, true, Collections.emptySet(),
+                mOnConnectableListener);
+        verify(mOnConnectableListener).onConnectable(any(), any());
     }
 }

@@ -49,6 +49,7 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -669,11 +670,16 @@ public class WifiBlocklistMonitor {
          * remove the BSSID from blocklist to make sure we are not accidentally blocking good
          * BSSIDs.
          **/
-        removeFromBlocklist(bssid, "Network validation success");
-
+        BssidStatus status = mBssidStatusMap.get(bssid);
+        if (status != null && status.blockReason == REASON_NETWORK_VALIDATION_FAILURE) {
+            removeFromBlocklist(bssid, "Network validation success");
+        }
         for (String affiliatedBssid : getAffiliatedBssids(bssid)) {
             resetNetworkValidationFailures(affiliatedBssid, ssid);
-            removeFromBlocklist(affiliatedBssid, "Network validation success");
+            status = mBssidStatusMap.get(affiliatedBssid);
+            if (status != null && status.blockReason == REASON_NETWORK_VALIDATION_FAILURE) {
+                removeFromBlocklist(affiliatedBssid, "Network validation success");
+            }
         }
     }
 
@@ -743,6 +749,30 @@ public class WifiBlocklistMonitor {
     }
 
     /**
+     * Handle network being enabled but not explicitly connected by user.
+     * Clear blocked BSSIDs except for certain reasons.
+     */
+    public void onEnableNetwork(WifiConfiguration config) {
+        if (config == null || config.SSID == null) {
+            Log.e(TAG, "Invalid input: config=" + config);
+            return;
+        }
+        Iterator<Map.Entry<String, BssidStatus>> iterator = mBssidStatusMap.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, BssidStatus> entry = iterator.next();
+            BssidStatus status = entry.getValue();
+            if (status == null || !config.SSID.equals(status.ssid) || !status.isInBlocklist) {
+                continue;
+            }
+            if (status.blockReason != REASON_APP_DISALLOW
+                    && status.blockReason != REASON_FRAMEWORK_DISCONNECT_CONNECTED_SCORE
+                    && status.blockReason != REASON_FRAMEWORK_DISCONNECT_MBO_OCE) {
+                iterator.remove();
+            }
+        }
+    }
+
+    /**
      * Clears the blocklist for BSSIDs associated with the input SSID only.
      * @param ssid
      */
@@ -809,11 +839,12 @@ public class WifiBlocklistMonitor {
      * @param ssids set of ssids to update firmware roaming configuration for.
      * @return Set of BSSIDs currently in the blocklist
      */
-    public Set<String> updateAndGetBssidBlocklistForSsids(@NonNull Set<String> ssids) {
+    public Set<String> updateAndGetBssidBlocklistForSsids(@NonNull Set<String> ssids,
+            @NonNull Set<String> connectedBssids) {
         int numBefore = getNumBlockedBssidsForSsids(ssids);
         Set<String> bssidBlocklist = updateAndGetBssidBlocklist();
         if (getNumBlockedBssidsForSsids(ssids) != numBefore) {
-            updateFirmwareRoamingConfiguration(ssids);
+            updateFirmwareRoamingConfiguration(ssids, connectedBssids);
         }
         return bssidBlocklist;
     }
@@ -928,13 +959,16 @@ public class WifiBlocklistMonitor {
      * Sends the BSSIDs belonging to the input SSID down to the firmware to prevent auto-roaming
      * to those BSSIDs.
      * @param ssids
+     * @param connectedBssids connected BSSIDs should not be passed down to firmware
      */
-    public void updateFirmwareRoamingConfiguration(@NonNull Set<String> ssids) {
+    public void updateFirmwareRoamingConfiguration(@NonNull Set<String> ssids,
+            @NonNull Set<String> connectedBssids) {
         if (!mConnectivityHelper.isFirmwareRoamingSupported()) {
             return;
         }
         ArrayList<String> bssidBlocklist = updateAndGetBssidBlocklistInternal()
-                .filter(entry -> ssids.contains(entry.ssid))
+                .filter(entry -> ssids.contains(entry.ssid)
+                        && !connectedBssids.contains(entry.bssid))
                 .sorted((o1, o2) -> (int) (o2.blocklistEndTimeMs - o1.blocklistEndTimeMs))
                 .map(entry -> entry.bssid)
                 .collect(Collectors.toCollection(ArrayList::new));

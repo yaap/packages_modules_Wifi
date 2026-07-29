@@ -24,7 +24,6 @@ import static android.net.wifi.SoftApConfiguration.SECURITY_TYPE_WPA3_SAE_TRANSI
 import static com.android.server.wifi.WifiSettingsConfigStore.WIFI_STATIC_CHIP_INFO;
 
 import android.annotation.NonNull;
-import android.app.ActivityManager;
 import android.app.compat.CompatChanges;
 import android.content.Context;
 import android.content.IntentFilter;
@@ -39,6 +38,8 @@ import android.net.wifi.util.Environment;
 import android.net.wifi.util.WifiResourceCache;
 import android.os.Handler;
 import android.os.Process;
+import android.os.UserHandle;
+import android.os.UserManager;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.SparseIntArray;
@@ -47,15 +48,19 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.MacAddressUtils;
 import com.android.server.wifi.util.ApConfigUtil;
+import com.android.server.wifi.util.WifiPermissionsUtil;
 import com.android.wifi.flags.Flags;
 import com.android.wifi.resources.R;
+
 
 import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 
 import javax.annotation.Nullable;
 
@@ -86,6 +91,7 @@ public class WifiApConfigStore {
 
     private final WifiContext mContext;
     private final Handler mHandler;
+    private final UserManager mUserManager;
     private final WifiMetrics mWifiMetrics;
     private final BackupManagerProxy mBackupManagerProxy;
     private final MacAddressUtil mMacAddressUtil;
@@ -94,6 +100,7 @@ public class WifiApConfigStore {
     private final WifiNative mWifiNative;
     private final HalDeviceManager mHalDeviceManager;
     private final WifiSettingsConfigStore mWifiSettingsConfigStore;
+    private final WifiPermissionsUtil mWifiPermissionsUtil;
     private boolean mHasNewDataToSerialize = false;
     private boolean mForceApChannel = false;
     private int mForcedApBand;
@@ -101,6 +108,10 @@ public class WifiApConfigStore {
     private int mForcedApMaximumChannelBandWidth;
     private final boolean mIsAutoAppendLowerBandEnabled;
     private final WifiResourceCache mResourceCache;
+    private final Set<UserHandle> mUsersNeedMigration = new HashSet<>();
+    private SoftApConfiguration mSharedToPrivateMigrationDataHolder;
+    private int mCurrentUserId = UserHandle.SYSTEM.getIdentifier();
+    private boolean mVerboseLoggingEnabled = false;
 
     /**
      * Module to interact with the wifi config store.
@@ -112,7 +123,7 @@ public class WifiApConfigStore {
             return mPersistentWifiApConfig;
         }
 
-        public void fromDeserialized(SoftApConfiguration config) {
+        public void fromDeserialized(@NonNull SoftApConfiguration config) {
             if (config.getPersistentRandomizedMacAddress() == null) {
                 config = updatePersistentRandomizedMacAddress(config);
             }
@@ -123,11 +134,53 @@ public class WifiApConfigStore {
         }
 
         public void reset() {
-            mPersistentWifiApConfig = null;
+            if (Environment.isSdkAtLeastC() && Flags.multiUserWifiEnhancement()) {
+                resetUserSessionData();
+            } else {
+                mPersistentWifiApConfig = null;
+            }
         }
 
         public boolean hasNewDataToSerialize() {
             return mHasNewDataToSerialize;
+        }
+
+        public void prepareSharedToPrivateMigrationDataHolder(@NonNull SoftApConfiguration config) {
+            if (!mUsersNeedMigration.isEmpty()) {
+                return;
+            }
+            Log.d(TAG, "Caching data for migration from shared SoftAp configuration.");
+            mUsersNeedMigration.addAll(mUserManager.getUserHandles(/* excludeDying= */ true));
+            mSharedToPrivateMigrationDataHolder = config;
+        }
+
+        public void resetMigrationDataHolder() {
+            Log.d(TAG, "Resetting migration data holder from shared SoftAp configuration.");
+            mUsersNeedMigration.clear();
+            mSharedToPrivateMigrationDataHolder = null;
+        }
+
+        public void migrateFromSharedToPrivateIfNeeded() {
+            UserHandle foregroundUser = UserHandle.of(mWifiPermissionsUtil.getCurrentUser());
+            SoftApConfiguration config;
+            if (mSharedToPrivateMigrationDataHolder == null
+                    || !mUsersNeedMigration.contains(foregroundUser)) {
+                // We generate default SoftApConfiguration and save to store for two cases:
+                // 1. The migration cache doesn't exist.
+                // 2. The current user is not an existing user before upgrading. We assume the DE
+                // data belong to all existing users and migrate to their CE stores when they load.
+                // For new users created after upgrading, we don't migrate and instead use default.
+                config = updatePersistentRandomizedMacAddress(getDefaultApConfiguration());
+            } else {
+                Log.i(TAG, "Obtaining migration data from shared SoftAp configuration for user id: "
+                        + foregroundUser.getIdentifier());
+                config = new SoftApConfiguration.Builder(
+                        mSharedToPrivateMigrationDataHolder).build();
+                if (config.getPersistentRandomizedMacAddress() == null) {
+                    config = updatePersistentRandomizedMacAddress(config);
+                }
+            }
+            persistConfigAndTriggerBackupManagerProxy(config);
         }
     }
 
@@ -141,14 +194,22 @@ public class WifiApConfigStore {
             WifiMetrics wifiMetrics) {
         mContext = context;
         mHandler = handler;
+        mUserManager = wifiInjector.getUserManager();
         mBackupManagerProxy = backupManagerProxy;
         mWifiConfigManager = wifiConfigManager;
         mActiveModeWarden = activeModeWarden;
         mWifiMetrics = wifiMetrics;
         mWifiNative = wifiInjector.getWifiNative();
-        // Register store data listener
+        mWifiPermissionsUtil = wifiInjector.getWifiPermissionsUtil();
+
+        // Register store data listeners
+        final SoftApStoreDataSource softApStoreDataSource = new SoftApStoreDataSource();
         wifiConfigStore.registerStoreData(
-                wifiInjector.makeSoftApStoreData(new SoftApStoreDataSource()));
+                wifiInjector.makeSharedSoftApStoreData(softApStoreDataSource));
+        if (Environment.isSdkAtLeastC() && Flags.multiUserWifiEnhancement()) {
+            wifiConfigStore.registerStoreData(
+                    wifiInjector.makeUserSoftApStoreData(softApStoreDataSource));
+        }
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_HOTSPOT_CONFIG_USER_TAPPED_CONTENT);
@@ -598,8 +659,8 @@ public class WifiApConfigStore {
 
     private String generateKeyForPersistentMac(WifiSsid ssid) {
         String key = ssid != null ? ssid.toString() : null;
-        if (Flags.multiUserWifiEnhancement() && Environment.isSdkNewerThanB()) {
-            String currentUserId = String.valueOf(ActivityManager.getCurrentUser());
+        if (Environment.isSdkAtLeastC() && Flags.multiUserWifiEnhancement()) {
+            String currentUserId = String.valueOf(mWifiPermissionsUtil.getCurrentUser());
             key = ssid != null ? ssid.toString() + currentUserId
                     : currentUserId;
         }
@@ -856,9 +917,64 @@ public class WifiApConfigStore {
     }
 
     /**
-     * Returns the last configured Wi-Fi tethered AP passphrase.
+     * Returns the last configured Wi-Fi tethered AP passphrase for the current user.
      */
     public synchronized String getLastConfiguredTetheredApPassphraseSinceBoot() {
         return mLastConfiguredPassphrase;
+    }
+
+    /**
+     * Resets user-session related data, typically invoked on user switch or stop (logout).
+     */
+    private synchronized void resetUserSessionData() {
+        mPersistentWifiApConfig = null;
+        mHasNewDataToSerialize = false;
+        mLastConfiguredPassphrase = null;
+    }
+
+    /**
+     * Handles the switch to a different foreground user:
+     * - Currently, only updates {@link #mCurrentUserId} to be used by other handlers. The I/O of
+     *   {@link SoftApStoreData} is maintained by {@link WifiConfigManager#handleUserSwitch} and
+     *   data reset is called by {@link SoftApStoreData#resetData} when data for new user is loaded.
+     *
+     * Need to be called when {@link com.android.server.SystemService#onUserSwitching} is invoked.
+     *
+     * @param userId The identifier of the new foreground user, after the switch.
+     */
+    public void handleUserSwitch(int userId) {
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "Handling user switch for " + userId);
+        }
+        if (userId == mCurrentUserId) {
+            Log.w(TAG, "User already in foreground " + userId);
+            return;
+        }
+        mCurrentUserId = userId;
+    }
+
+    /**
+     * Handles the stop of foreground user. This is needed to clear any user data. Note that we must
+     * call this method after user data is saved by {@link WifiConfigManager#handleUserStop}, which
+     * handles the serialization of all StoreData including {@link SoftApStoreData}.
+     *
+     * Need to be called when {@link com.android.server.SystemService#onUserStopping} is invoked.
+     *
+     * @param userId The identifier of the user that stopped.
+     */
+    public void handleUserStop(int userId) {
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "Handling user stop for " + userId);
+        }
+        if (userId == mCurrentUserId) {
+            resetUserSessionData();
+        }
+    }
+
+    /**
+     * Enable/disable verbose logging.
+     */
+    public void enableVerboseLogging(boolean enabled) {
+        mVerboseLoggingEnabled = enabled;
     }
 }

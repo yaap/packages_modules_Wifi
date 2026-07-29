@@ -32,6 +32,7 @@ import android.content.res.Resources;
 import android.net.NetworkInfo;
 import android.net.wifi.WifiContext;
 import android.net.wifi.p2p.WifiP2pManager;
+import android.net.wifi.util.Environment;
 import android.os.Message;
 import android.os.Process;
 import android.os.WorkSource;
@@ -126,9 +127,9 @@ public class InterfaceConflictManager {
                 }
 
             }};
-        if (Flags.monitorIntentForAllUsers()) {
+        if (Flags.monitorIntentForAllUsers() && Environment.isSdkAtLeastC()) {
             mContext.registerReceiverForAllUsers(p2pConnectionChangeReceiver,
-                    intentFilter, null, mThreadRunner.getHandler());
+                    intentFilter, null, null);
         } else {
             mContext.registerReceiver(p2pConnectionChangeReceiver, intentFilter);
         }

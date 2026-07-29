@@ -42,8 +42,10 @@ import android.net.wifi.WifiManager;
 import android.net.wifi.WifiStringResourceWrapper;
 import android.net.wifi.hotspot2.PasspointConfiguration;
 import android.net.wifi.hotspot2.pps.Credential;
+import android.net.wifi.util.Environment;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.DeadObjectException;
 import android.os.Handler;
 import android.os.ParcelUuid;
 import android.os.PersistableBundle;
@@ -615,7 +617,7 @@ public class WifiCarrierInfoManager {
         mIntentFilter.addAction(NOTIFICATION_USER_ALLOWED_CARRIER_INTENT_ACTION);
         mIntentFilter.addAction(NOTIFICATION_USER_DISALLOWED_CARRIER_INTENT_ACTION);
         mIntentFilter.addAction(NOTIFICATION_USER_CLICKED_INTENT_ACTION);
-        if (Flags.monitorIntentForAllUsers()) {
+        if (Flags.monitorIntentForAllUsers() && Environment.isSdkAtLeastC()) {
             mContext.registerReceiverForAllUsers(mBroadcastReceiver,
                     mIntentFilter, NETWORK_SETTINGS, handler);
         } else {
@@ -671,9 +673,9 @@ public class WifiCarrierInfoManager {
                 }
             }};
 
-        if (Flags.monitorIntentForAllUsers()) {
+        if (Flags.monitorIntentForAllUsers() && Environment.isSdkAtLeastC()) {
             mContext.registerReceiverForAllUsers(carrierEventReceiver,
-                    filter, null, handler);
+                    filter, null, null);
         } else {
             mContext.registerReceiver(carrierEventReceiver,
                     filter);
@@ -2196,7 +2198,16 @@ public class WifiCarrierInfoManager {
             return mUserDataEnabled.get(subId);
         }
         TelephonyManager specifiedTm = mTelephonyManager.createForSubscriptionId(subId);
-        boolean enabled = specifiedTm.isDataEnabled();
+        boolean enabled = false;
+        try {
+            enabled = specifiedTm.isDataEnabled();
+        } catch (RuntimeException e){
+            if (e.getCause() instanceof DeadObjectException) {
+                Log.w(TAG, "Telephony service died, skipping data enabled check");
+            } else {
+                throw e;
+            }
+        }
         mUserDataEnabled.put(subId, enabled);
         UserDataEnabledChangedListener listener = new UserDataEnabledChangedListener(subId);
         specifiedTm.registerTelephonyCallback(new HandlerExecutor(mHandler), listener);

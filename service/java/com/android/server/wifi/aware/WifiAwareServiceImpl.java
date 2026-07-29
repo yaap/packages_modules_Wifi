@@ -29,6 +29,7 @@ import android.net.wifi.IBooleanListener;
 import android.net.wifi.IIntegerListener;
 import android.net.wifi.IListListener;
 import android.net.wifi.WifiManager;
+import android.net.wifi.aware.AwareDataPathRequest;
 import android.net.wifi.aware.AwareParams;
 import android.net.wifi.aware.AwareResources;
 import android.net.wifi.aware.Characteristics;
@@ -665,6 +666,52 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
     }
 
     @Override
+    public void requestDataPath(int clientId, int sessionId, int peerId,
+            AwareDataPathRequest request) {
+        enforceAccessPermission();
+        enforceChangePermission();
+        int uid = getMockableCallingUid();
+        enforceClientValidity(uid, clientId);
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "requestDataPath: clientId=" + clientId
+                    + ", sessionId=" + sessionId
+                    + ", peerId=" + peerId
+                    + ", request=" + request);
+        }
+        mStateManager.requestDataPath(clientId, sessionId, peerId, request);
+    }
+
+    @Override
+    public void respondToDataPath(int clientId, int sessionId, int peerId,
+            AwareDataPathRequest request, boolean accept) {
+        enforceAccessPermission();
+        enforceChangePermission();
+        int uid = getMockableCallingUid();
+        enforceClientValidity(uid, clientId);
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "requestDatapath: clientId=" + clientId
+                    + ", sessionId=" + sessionId
+                    + ", peerId=" + peerId
+                    + ", request=" + request
+                    + ", accept=" + accept);
+        }
+        mStateManager.respondToDataPathRequest(clientId, sessionId, peerId, request, accept);
+    }
+
+    @Override
+    public void releaseDataPath(int clientId, int sessionId, int peerId) throws RemoteException {
+        enforceAccessPermission();
+        enforceChangePermission();
+        int uid = getMockableCallingUid();
+        enforceClientValidity(uid, clientId);
+        if (mVerboseLoggingEnabled) {
+            Log.v(TAG, "releaseDataPath: clientId=" + clientId + ", sessionId=" + sessionId
+                    + ", peerId=" + peerId);
+        }
+        mStateManager.releaseDataPathRequest(clientId, sessionId, peerId);
+    }
+
+    @Override
     public void initiateNanPairingSetupRequest(int clientId, int sessionId, int peerId,
             String password, String pairingDeviceAlias, int cipherSuite) {
         enforceAccessPermission();
@@ -728,12 +775,20 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
 
     @Override
     public void initiateBootStrappingSetupRequest(int clientId, int sessionId, int peerId,
-            int method) {
+            int method, byte[] ssi) {
         enforceAccessPermission();
         enforceChangePermission();
-        if (!mStateManager.getCharacteristics().isAwarePairingSupported()) {
+        Characteristics characteristics = mStateManager.getCharacteristics();
+        if (characteristics == null) {
+            throw new IllegalArgumentException("NAN characteristics are not available");
+        }
+        if (!characteristics.isAwarePairingSupported()) {
             throw new IllegalArgumentException(
                     "NAN pairing is not supported");
+        }
+        if (ssi != null && ssi.length > characteristics.getMaxServiceSpecificInfoLength()) {
+            throw new IllegalArgumentException(
+                    "serviceSpecificInfo length longer than supported by device characteristics");
         }
         int uid = getMockableCallingUid();
         enforceClientValidity(uid, clientId);
@@ -743,7 +798,7 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
                             + ", uid=" + uid + ", clientId=" + clientId + ", peerId=" + peerId);
         }
         mStateManager.initiateBootStrappingSetupRequest(clientId, sessionId, peerId, method, 0,
-                null);
+                null, ssi);
     }
 
     @Override
@@ -855,5 +910,26 @@ public class WifiAwareServiceImpl extends IWifiAwareManager.Stub {
     private boolean checkNetworkStackPermission() {
         return mContext.checkCallingOrSelfPermission(Manifest.permission.NETWORK_STACK)
                 == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /**
+     * Handle user switch event
+     */
+    public void handleUserSwitch(int userId) {
+        mStateManager.handleUserSwitch(userId);
+    }
+
+    /**
+     * Handle user unlock event
+     */
+    public void handleUserUnlock(int userId) {
+        mStateManager.handleUserUnlock(userId);
+    }
+
+    /**
+     * Handle user stop event
+     */
+    public void handleUserStop(int userId) {
+        mStateManager.handleUserStop(userId);
     }
 }

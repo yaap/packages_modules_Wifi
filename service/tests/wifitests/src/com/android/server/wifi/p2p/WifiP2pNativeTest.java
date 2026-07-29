@@ -36,7 +36,6 @@ import android.app.test.MockAnswerUtil.AnswerWithArguments;
 import android.hardware.wifi.V1_0.IWifiP2pIface;
 import android.net.MacAddress;
 import android.net.wifi.WifiMigration;
-import android.net.wifi.nl80211.WifiNl80211Manager;
 import android.net.wifi.p2p.WifiP2pConfig;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.p2p.WifiP2pDirInfo;
@@ -65,6 +64,7 @@ import com.android.server.wifi.WifiNative;
 import com.android.server.wifi.WifiSettingsConfigStore;
 import com.android.server.wifi.WifiVendorHal;
 import com.android.server.wifi.hal.WifiHal;
+import com.android.server.wifi.nl80211.Nl80211Native;
 import com.android.wifi.flags.FeatureFlags;
 import com.android.wifi.flags.Flags;
 
@@ -118,7 +118,7 @@ public class WifiP2pNativeTest extends WifiBaseTest {
     private static final WifiP2pDirInfo TEST_DIR_INFO = new WifiP2pDirInfo(
             MacAddress.fromString(TEST_BSSID), TEST_NONCE, TEST_DIR_TAG);
 
-    @Mock private WifiNl80211Manager mWifiCondManager;
+    @Mock private Nl80211Native mNl80211Native;
     @Mock private WifiNative mWifiNative;
     @Mock private WifiMetrics mWifiMetrics;
     @Mock private WifiVendorHal mWifiVendorHalMock;
@@ -180,7 +180,7 @@ public class WifiP2pNativeTest extends WifiBaseTest {
                     .get(eq(WifiSettingsConfigStore.WIFI_P2P_SUPPORTED_FEATURES)))
                     .thenReturn(0L);
         }
-        mWifiP2pNative = new WifiP2pNative(mWifiCondManager, mWifiNative, mWifiMetrics,
+        mWifiP2pNative = new WifiP2pNative(mNl80211Native, mWifiNative, mWifiMetrics,
                 mWifiVendorHalMock, mSupplicantP2pIfaceHalMock, mHalDeviceManagerMock,
                 mPropertyServiceMock, mWifiInjector);
         if (Environment.isSdkAtLeastB()) {
@@ -250,12 +250,30 @@ public class WifiP2pNativeTest extends WifiBaseTest {
     public void testSetupInterfaceByWifiNativeSuccessInCreatingP2pIface() {
         when(mSupplicantP2pIfaceHalMock.initialize()).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.isInitializationComplete()).thenReturn(true);
-        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE))).thenReturn(true);
+        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE), anyInt())).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.registerDeathHandler(any())).thenReturn(true);
 
         assertEquals(
                 mWifiP2pNative.setupInterface(
-                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock),
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0),
+                TEST_IFACE);
+    }
+
+    /**
+     * Verifies that setupInterface by WifiNative returns correct values
+     * when successfully creating P2P Iface with a user id.
+     */
+    @Test
+    public void testSetupInterfaceByWifiNativeSuccessInCreatingP2pIfaceWithUserId() {
+        final int userId = 10;
+        when(mSupplicantP2pIfaceHalMock.initialize()).thenReturn(true);
+        when(mSupplicantP2pIfaceHalMock.isInitializationComplete()).thenReturn(true);
+        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE), eq(userId))).thenReturn(true);
+        when(mSupplicantP2pIfaceHalMock.registerDeathHandler(any())).thenReturn(true);
+
+        assertEquals(
+                mWifiP2pNative.setupInterface(
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, userId),
                 TEST_IFACE);
     }
 
@@ -268,12 +286,12 @@ public class WifiP2pNativeTest extends WifiBaseTest {
         when(mPropertyServiceMock.getString(anyString(), anyString())).thenReturn(TEST_IFACE);
         when(mSupplicantP2pIfaceHalMock.initialize()).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.isInitializationComplete()).thenReturn(true);
-        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE))).thenReturn(true);
+        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE), anyInt())).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.registerDeathHandler(any())).thenReturn(true);
 
         assertEquals(
                 mWifiP2pNative.setupInterface(
-                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock),
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0),
                 TEST_IFACE);
     }
 
@@ -289,11 +307,11 @@ public class WifiP2pNativeTest extends WifiBaseTest {
         when(mHalDeviceManagerMock.isItPossibleToCreateIface(
                 eq(HalDeviceManager.HDM_CREATE_IFACE_P2P), eq(mWorkSourceMock))).thenReturn(true);
 
-        mWifiP2pNative.setupInterface(mDestroyedListenerMock, mHandlerMock, mWorkSourceMock);
+        mWifiP2pNative.setupInterface(mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0);
         verify(mWifiMetrics).incrementNumSetupP2pInterfaceFailureDueToHal();
         assertEquals(
                 mWifiP2pNative.setupInterface(
-                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock),
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0),
                 null);
     }
 
@@ -309,7 +327,7 @@ public class WifiP2pNativeTest extends WifiBaseTest {
         when(mHalDeviceManagerMock.isItPossibleToCreateIface(
                 eq(HalDeviceManager.HDM_CREATE_IFACE_P2P), eq(mWorkSourceMock))).thenReturn(false);
 
-        mWifiP2pNative.setupInterface(mDestroyedListenerMock, mHandlerMock, mWorkSourceMock);
+        mWifiP2pNative.setupInterface(mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0);
         verify(mWifiMetrics, never()).incrementNumSetupP2pInterfaceFailureDueToHal();
     }
 
@@ -323,7 +341,7 @@ public class WifiP2pNativeTest extends WifiBaseTest {
         when(mSupplicantP2pIfaceHalMock.initialize()).thenReturn(false);
         assertEquals(
                 mWifiP2pNative.setupInterface(
-                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock),
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0),
                 null);
         verify(mWifiMetrics).incrementNumSetupP2pInterfaceFailureDueToSupplicant();
     }
@@ -334,13 +352,13 @@ public class WifiP2pNativeTest extends WifiBaseTest {
      */
     @Test
     public void testSetupInterfaceByWifiNativeAndFailureInSupplicantConnectionInitNotCompleted() {
-        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE))).thenReturn(true);
+        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE), anyInt())).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.initialize()).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.isInitializationComplete()).thenReturn(false);
 
         assertEquals(
                 mWifiP2pNative.setupInterface(
-                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock),
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0),
                 null);
         verify(mWifiMetrics).incrementNumSetupP2pInterfaceFailureDueToSupplicant();
     }
@@ -353,11 +371,11 @@ public class WifiP2pNativeTest extends WifiBaseTest {
     public void testSetupInterfaceByWifiNativeAndFailureInSettingUpP2pIfaceInSupplicant() {
         when(mSupplicantP2pIfaceHalMock.initialize()).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.isInitializationComplete()).thenReturn(true);
-        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE))).thenReturn(false);
+        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE), anyInt())).thenReturn(false);
 
         assertEquals(
                 mWifiP2pNative.setupInterface(
-                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock),
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0),
                 null);
         verify(mWifiMetrics).incrementNumSetupP2pInterfaceFailureDueToSupplicant();
     }
@@ -370,11 +388,11 @@ public class WifiP2pNativeTest extends WifiBaseTest {
     public void testSetupInterfaceFailureInSettingUpP2pIfaceInSupplicantRegisterDeathHandler() {
         when(mSupplicantP2pIfaceHalMock.initialize()).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.isInitializationComplete()).thenReturn(true);
-        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE))).thenReturn(true);
+        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE), anyInt())).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.registerDeathHandler(any())).thenReturn(false);
         assertEquals(
                 mWifiP2pNative.setupInterface(
-                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock),
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0),
                 null);
         verify(mWifiMetrics).incrementNumSetupP2pInterfaceFailureDueToSupplicant();
     }
@@ -388,7 +406,7 @@ public class WifiP2pNativeTest extends WifiBaseTest {
         prepareDbsMock(true);
         assertEquals(
                 mWifiP2pNative.setupInterface(
-                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock),
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0),
                 TEST_IFACE);
     }
 
@@ -405,7 +423,7 @@ public class WifiP2pNativeTest extends WifiBaseTest {
 
         assertEquals(
                 mWifiP2pNative.setupInterface(
-                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock),
+                        mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0),
                 TEST_IFACE);
     }
 
@@ -802,7 +820,7 @@ public class WifiP2pNativeTest extends WifiBaseTest {
         assertTrue(mWifiP2pNative.p2pGroupAdd(config, true));
 
         for (String intf: mWifiClientInterfaceNames) {
-            verify(mWifiCondManager).abortScan(eq(intf));
+            verify(mNl80211Native).abortScan(eq(intf));
         }
 
         if (!Environment.isSdkAtLeastB()) {
@@ -1163,9 +1181,9 @@ public class WifiP2pNativeTest extends WifiBaseTest {
         when(mSupplicantP2pIfaceHalMock.isInitializationStarted()).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.initialize()).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.isInitializationComplete()).thenReturn(true);
-        when(mSupplicantP2pIfaceHalMock.setupIface(any())).thenReturn(true);
+        when(mSupplicantP2pIfaceHalMock.setupIface(any(), anyInt())).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.registerDeathHandler(any())).thenReturn(true);
-        mWifiP2pNative.setupInterface(mDestroyedListenerMock, mHandlerMock, mWorkSourceMock);
+        mWifiP2pNative.setupInterface(mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0);
     }
 
     /**
@@ -1227,13 +1245,13 @@ public class WifiP2pNativeTest extends WifiBaseTest {
     public void testSupportedFeatures() throws Exception {
         when(mSupplicantP2pIfaceHalMock.initialize()).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.isInitializationComplete()).thenReturn(true);
-        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE))).thenReturn(true);
+        when(mSupplicantP2pIfaceHalMock.setupIface(eq(TEST_IFACE), anyInt())).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.registerDeathHandler(any())).thenReturn(true);
         when(mSupplicantP2pIfaceHalMock.getSupportedFeatures())
                 .thenReturn(WifiP2pManager.FEATURE_WIFI_DIRECT_R2
                         | WifiP2pManager.FEATURE_PCC_MODE_ALLOW_LEGACY_AND_R2_CONNECTION);
         assertEquals(TEST_IFACE, mWifiP2pNative.setupInterface(
-                mDestroyedListenerMock, mHandlerMock, mWorkSourceMock));
+                mDestroyedListenerMock, mHandlerMock, mWorkSourceMock, 0));
         assertEquals(WifiP2pManager.FEATURE_WIFI_DIRECT_R2
                         | WifiP2pManager.FEATURE_PCC_MODE_ALLOW_LEGACY_AND_R2_CONNECTION
                         | WifiP2pManager.FEATURE_SET_VENDOR_ELEMENTS

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 The Android Open Source Project
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -295,6 +295,7 @@ public class WifiRttControllerAidlImpl implements IWifiRttController {
                     .setUnverifiedResponderLocation(responderLocation)
                     .setRangingTimestampMillis(
                             rttResult.timeStampInUs / WifiRttController.CONVERSION_US_TO_MS)
+                    .setRetryAfterDurationMillis(rttResult.retryAfterDuration * 128)
                     .set80211mcMeasurement(rttResult.type == RttType.TWO_SIDED_11MC)
                     .setMeasurementChannelFrequencyMHz(rttResult.channelFreqMHz)
                     .setMeasurementBandwidth(halToFrameworkChannelBandwidth(rttResult.packetBw))

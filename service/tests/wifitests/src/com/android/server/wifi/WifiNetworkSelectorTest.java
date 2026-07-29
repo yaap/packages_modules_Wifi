@@ -47,6 +47,7 @@ import android.net.wifi.WifiContext;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiScanner;
 import android.net.wifi.WifiSsid;
+import android.net.wifi.util.Environment;
 import android.os.SystemClock;
 import android.util.ArraySet;
 import android.util.LocalLog;
@@ -60,6 +61,7 @@ import com.android.server.wifi.WifiNetworkSelector.ClientModeManagerState;
 import com.android.server.wifi.WifiNetworkSelectorTestUtil.ScanDetailsAndWifiConfigs;
 import com.android.server.wifi.hotspot2.PasspointNetworkNominateHelper;
 import com.android.server.wifi.proto.nano.WifiMetricsProto;
+import com.android.wifi.flags.Flags;
 import com.android.wifi.resources.R;
 
 import org.junit.After;
@@ -117,10 +119,12 @@ public class WifiNetworkSelectorTest extends WifiBaseTest {
         mSession = ExtendedMockito.mockitoSession()
                 .mockStatic(WifiInjector.class, withSettings().lenient())
                 .mockStatic(WifiInfo.class, withSettings().lenient())
+                .mockStatic(Flags.class, withSettings().lenient())
                 .startMocking();
         when(WifiInjector.getInstance()).thenReturn(mWifiInjector);
         when(mWifiInjector.getPasspointNetworkNominateHelper())
                 .thenReturn(mPasspointNetworkNominateHelper);
+        when(Flags.multiUserWifiEnhancement()).thenReturn(false);
         setupContext();
         setupResources();
         setupWifiConfigManager();
@@ -530,6 +534,49 @@ public class WifiNetworkSelectorTest extends WifiBaseTest {
         when(mClientModeManager.isIpProvisioningTimedOut()).thenReturn(true);
         cmmState = new ClientModeManagerState(mClientModeManager);
         assertTrue(mWifiNetworkSelector.isNetworkSelectionNeededForCmm(cmmState));
+    }
+
+    /**
+     * Verifies the behavior of hasSufficientLinkQuality for different RSSI values.
+     */
+    @Test
+    public void testHasSufficientLinkQuality() {
+        // Scenario 1: Invalid RSSI.
+        // Should return false immediately, regardless of frequency.
+        when(mWifiInfo.getRssi()).thenReturn(WifiInfo.INVALID_RSSI);
+        when(mWifiInfo.getFrequency()).thenReturn(2412); // A valid frequency
+        assertFalse("Should be insufficient for INVALID_RSSI",
+                mWifiNetworkSelector.hasSufficientLinkQuality(mWifiInfo));
+        when(mWifiInfo.getFrequency()).thenReturn(-1); // An invalid frequency
+        assertFalse("Should be insufficient for INVALID_RSSI and invalid frequency",
+                mWifiNetworkSelector.hasSufficientLinkQuality(mWifiInfo));
+
+        // Scenario 2: Sufficient RSSI.
+        // Should return true if RSSI is at or above the threshold for the band.
+        int sufficientRssi2g = mScoringParams.getSufficientRssi(2412);
+        when(mWifiInfo.getFrequency()).thenReturn(2412);
+        when(mWifiInfo.getRssi()).thenReturn(sufficientRssi2g);
+        assertTrue("Should be sufficient at the 2.4GHz threshold",
+                mWifiNetworkSelector.hasSufficientLinkQuality(mWifiInfo));
+        when(mWifiInfo.getRssi()).thenReturn(sufficientRssi2g + 10);
+        assertTrue("Should be sufficient above the 2.4GHz threshold",
+                mWifiNetworkSelector.hasSufficientLinkQuality(mWifiInfo));
+
+        // Scenario 3: Insufficient RSSI.
+        // Should return false if RSSI is below the threshold for the band.
+        when(mWifiInfo.getRssi()).thenReturn(sufficientRssi2g - 1);
+        assertFalse("Should be insufficient below the 2.4GHz threshold",
+                mWifiNetworkSelector.hasSufficientLinkQuality(mWifiInfo));
+
+        // Repeat for 5GHz band
+        int sufficientRssi5g = mScoringParams.getSufficientRssi(5220);
+        when(mWifiInfo.getFrequency()).thenReturn(5220);
+        when(mWifiInfo.getRssi()).thenReturn(sufficientRssi5g);
+        assertTrue("Should be sufficient at the 5GHz threshold",
+                mWifiNetworkSelector.hasSufficientLinkQuality(mWifiInfo));
+        when(mWifiInfo.getRssi()).thenReturn(sufficientRssi5g - 1);
+        assertFalse("Should be insufficient below the 5GHz threshold",
+                mWifiNetworkSelector.hasSufficientLinkQuality(mWifiInfo));
     }
 
     /**
@@ -3783,4 +3830,44 @@ public class WifiNetworkSelectorTest extends WifiBaseTest {
         candidate = mWifiNetworkSelector.selectNetwork(getWifiCandidates(3, bandMatrix, false));
         assertEquals("\"legacy\"", candidate.SSID);
     }
+
+    /**
+     * Verify that ThroughputScorer prefers private networks by adding a score award.
+     */
+    @Test
+    public void testThroughputScorerPrefersPrivateNetworkWithAward() {
+        assumeTrue(Environment.isSdkNewerThanB());
+        when(Flags.multiUserWifiEnhancement()).thenReturn(true);
+        String[] ssids = {"\"test_config\"", "\"test_config\""};
+        int[] freqs = {5180, 5180};
+        String[] bssids = {"6c:f3:7f:ae:8c:f3", "6c:f3:7f:ae:8c:f3"};
+        String[] caps = {"[WPA2-PSK][ESS]", "[WPA2-PSK][ESS]"};
+        int[] levels = {mThresholdQualifiedRssi5G + 5, mThresholdQualifiedRssi5G + 5};
+        int[] securities = {SECURITY_PSK, SECURITY_PSK};
+        boolean[] shareds = {true, false};
+
+        ScanDetailsAndWifiConfigs scanDetailsAndConfigs =
+                WifiNetworkSelectorTestUtil.setupScanDetailsAndConfigStore(ssids, bssids,
+                        freqs, caps, levels, securities, mWifiConfigManager, mClock, null, shareds);
+        List<ScanDetail> scanDetails = scanDetailsAndConfigs.getScanDetails();
+        WifiConfiguration[] wifiConfigs = scanDetailsAndConfigs.getWifiConfigs();
+        HashSet<String> blocklist = new HashSet<>();
+
+        WifiConfiguration privateConfig = wifiConfigs[1];
+
+        // Nominate both networks so they are considered for selection.
+        mWifiNetworkSelector.registerNetworkNominator(
+                new AllNetworkNominator(scanDetailsAndConfigs));
+
+        // Without the award, private network should be chosen.
+        List<WifiCandidates.Candidate> candidates = mWifiNetworkSelector.getCandidatesFromScan(
+                scanDetails, blocklist,
+                Arrays.asList(new ClientModeManagerState(TEST_IFACE_NAME, false, true, mWifiInfo,
+                        false, ROLE_CLIENT_PRIMARY)),
+                false, true, true, Collections.emptySet(), false, 0);
+        WifiConfiguration candidate = mWifiNetworkSelector.selectNetwork(candidates);
+        assertEquals("Private network should be selected without award",
+                privateConfig.networkId, candidate.networkId);
+    }
+
 }

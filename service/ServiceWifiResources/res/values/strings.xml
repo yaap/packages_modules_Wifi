@@ -339,4 +339,15 @@
     <string name="wifi_network_switch_dialog_title_bad_internet"><xliff:g id="ssid">%1$s</xliff:g> is low quality. Switch to <xliff:g id="ssid">%2$s</xliff:g>?</string>
     <string name="wifi_network_switch_dialog_positive_button">Switch</string>
     <string name="wifi_network_switch_dialog_negative_button">Don\u0027t switch</string>
+
+    <!-- Strings for Wi-Fi disconnect confirmation dialog. -->
+    <string name="wifi_disconnect_dialog_title">Disconnect from <xliff:g id="app_name">%1$s</xliff:g>?</string>
+    <string name="wifi_disconnect_dialog_message"> Disconnecting from this network will disconnect <xliff:g id="app_name">%1$s</xliff:g>. </string>
+    <string name="wifi_disconnect_dialog_positive_button">Disconnect</string>
+    <string name="wifi_disconnect_dialog_negative_button">Cancel</string>
+
+    <string name="wifi_disconnect_dialog_new_connection_title">Connect to a different Wi\u2011Fi network?</string>
+    <string name="wifi_disconnect_dialog_new_connection_message">Connecting to <xliff:g id="ssid">%2$s</xliff:g> will disconnect <xliff:g id="app_name">%1$s</xliff:g>. </string>
+    <string name="wifi_disconnect_dialog_new_connection_positive_button">Connect</string>
+
 </resources>

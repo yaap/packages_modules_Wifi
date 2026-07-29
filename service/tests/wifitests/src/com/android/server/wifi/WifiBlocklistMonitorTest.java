@@ -348,7 +348,8 @@ public class WifiBlocklistMonitorTest extends WifiBaseTest {
         verifyAddTestBssidToBlocklist();
         when(mClock.getWallClockMillis()).thenReturn(BASE_BLOCKLIST_DURATION + 1);
         assertEquals(0, mWifiBlocklistMonitor
-                .updateAndGetBssidBlocklistForSsids(Set.of(TEST_SSID_1)).size());
+                .updateAndGetBssidBlocklistForSsids(Set.of(TEST_SSID_1),
+                        Collections.EMPTY_SET).size());
         verify(mWifiConnectivityHelper).setFirmwareRoamingConfiguration(eq(new ArrayList<>()),
                 eq(new ArrayList<>()));
     }
@@ -362,7 +363,8 @@ public class WifiBlocklistMonitorTest extends WifiBaseTest {
         verifyAddTestBssidToBlocklist();
         when(mClock.getWallClockMillis()).thenReturn(BASE_BLOCKLIST_DURATION + 1);
         assertEquals(0, mWifiBlocklistMonitor
-                .updateAndGetBssidBlocklistForSsids(Set.of(TEST_SSID_2)).size());
+                .updateAndGetBssidBlocklistForSsids(Set.of(TEST_SSID_2),
+                        Collections.EMPTY_SET).size());
         verify(mWifiConnectivityHelper, never()).setFirmwareRoamingConfiguration(
                 eq(new ArrayList<>()), eq(new ArrayList<>()));
     }
@@ -745,16 +747,17 @@ public class WifiBlocklistMonitorTest extends WifiBaseTest {
     }
 
     /**
-     * Verify that handleNetworkValidationSuccess resets appropriate blocklist streak counts
-     * and removes the BSSID from blocklist.
+     * Verify that handleNetworkValidationSuccess resets appropriate blocklist streak counts.
      */
     @Test
     public void testNetworkValidationResetsBlocklistStreak() {
+        // This is adding to blockist with reason REASON_AP_UNABLE_TO_HANDLE_NEW_STA
         verifyAddTestBssidToBlocklist();
         mWifiBlocklistMonitor.handleNetworkValidationSuccess(TEST_BSSID_1, TEST_SSID_1);
         verify(mWifiScoreCard).resetBssidBlocklistStreak(TEST_SSID_1, TEST_BSSID_1,
                 WifiBlocklistMonitor.REASON_NETWORK_VALIDATION_FAILURE);
-        assertEquals(0, mWifiBlocklistMonitor.updateAndGetBssidBlocklist().size());
+        // should not clear blocklist since the BSSID was blocked for another reason
+        assertEquals(1, mWifiBlocklistMonitor.updateAndGetBssidBlocklist().size());
     }
 
     /**
@@ -880,20 +883,23 @@ public class WifiBlocklistMonitorTest extends WifiBaseTest {
         ArrayList<String> blocklist1 = new ArrayList<>();
         blocklist1.add(TEST_BSSID_2);
         blocklist1.add(TEST_BSSID_1);
-        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_1));
+        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_1),
+                Collections.EMPTY_SET);
         verify(mWifiConnectivityHelper).setFirmwareRoamingConfiguration(eq(blocklist1),
                 eq(new ArrayList<>()));
 
         // Verify we are sending 1 BSSID down to the firmware for SSID_2.
         ArrayList<String> blocklist2 = new ArrayList<>();
         blocklist2.add(TEST_BSSID_3);
-        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_2));
+        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_2),
+                Collections.EMPTY_SET);
         verify(mWifiConnectivityHelper).setFirmwareRoamingConfiguration(eq(blocklist2),
                 eq(new ArrayList<>()));
 
         // Verify we are not sending any BSSIDs down to the firmware since there does not
         // exists any BSSIDs for TEST_SSID_3 in the blocklist.
-        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_3));
+        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_3),
+                Collections.EMPTY_SET);
         verify(mWifiConnectivityHelper).setFirmwareRoamingConfiguration(eq(new ArrayList<>()),
                 eq(new ArrayList<>()));
     }
@@ -925,11 +931,30 @@ public class WifiBlocklistMonitorTest extends WifiBaseTest {
                 }
                 blocklist.add(bssid + j);
             }
-            mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_1));
+            mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_1),
+                    Collections.EMPTY_SET);
             verify(mWifiConnectivityHelper).setFirmwareRoamingConfiguration(eq(blocklist),
                     eq(new ArrayList<>()));
         }
         assertEquals(10, mWifiBlocklistMonitor.updateAndGetBssidBlocklist().size());
+    }
+
+    /**
+     * Verify that when sending the blocklist down to firmware, the connected BSSID is filtered out.
+     */
+    @Test
+    public void testUpdateFirmwareRoamingConfigurationFiltersConnectedBssid() {
+        verifyAddMultipleBssidsToBlocklist();
+
+        // TEST_BSSID_1 and TEST_BSSID_2 are in blocklist for SSID_1.
+        // If we say TEST_BSSID_1 is connected, it should be filtered out.
+        ArrayList<String> expectedBlocklist = new ArrayList<>();
+        expectedBlocklist.add(TEST_BSSID_2);
+
+        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_1),
+                Set.of(TEST_BSSID_1));
+        verify(mWifiConnectivityHelper).setFirmwareRoamingConfiguration(eq(expectedBlocklist),
+                eq(new ArrayList<>()));
     }
 
     /**
@@ -941,7 +966,8 @@ public class WifiBlocklistMonitorTest extends WifiBaseTest {
         when(mWifiConnectivityHelper.isFirmwareRoamingSupported()).thenReturn(false);
         verifyAddTestBssidToBlocklist();
 
-        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_1));
+        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of(TEST_SSID_1),
+                Collections.EMPTY_SET);
         verify(mWifiConnectivityHelper, never()).setFirmwareRoamingConfiguration(any(), any());
     }
 
@@ -1131,8 +1157,15 @@ public class WifiBlocklistMonitorTest extends WifiBaseTest {
         // Affiliated BSSID mapping: TEST_BSSID_1 -> {TEST_BSSID_2, TEST_BSSID_3}
         mWifiBlocklistMonitor.setAffiliatedBssids(TEST_BSSID_1, bssidList);
 
-        // Add to block list with reason code REASON_AP_UNABLE_TO_HANDLE_NEW_STA
-        verifyAddTestBssidToBlocklist();
+        // Add to block list with reason code REASON_NETWORK_VALIDATION_FAILURE
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork(TEST_SSID_1);
+        mWifiBlocklistMonitor.handleBssidConnectionFailure(
+                TEST_BSSID_1, config,
+                WifiBlocklistMonitor.REASON_NETWORK_VALIDATION_FAILURE, TEST_GOOD_RSSI);
+        assertTrue(mWifiBlocklistMonitor.updateAndGetBssidBlocklist().contains(TEST_BSSID_1));
+        assertTrue(mWifiBlocklistMonitor.getBssidBlocklistForSsids(
+                new ArraySet<>(Arrays.asList(new String[]{TEST_SSID_1}))).contains(TEST_BSSID_1));
+        assertTrue(mWifiBlocklistMonitor.getBssidBlocklistForSsids(null).contains(TEST_BSSID_1));
 
         // Network validation success resets with resetBssidBlocklistStreak()
         mWifiBlocklistMonitor.handleNetworkValidationSuccess(TEST_BSSID_1, TEST_SSID_1);
@@ -1795,7 +1828,8 @@ public class WifiBlocklistMonitorTest extends WifiBaseTest {
         when(mWifiConnectivityHelper.isFirmwareRoamingSupported()).thenReturn(true);
         Set<String> allowList = Set.of("ssid1", "ssid2", "ssid3", "ssid4", "ssid5");
         mWifiBlocklistMonitor.setAllowlistSsids("ssid0", new ArrayList<>(allowList));
-        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of("ssid0"));
+        mWifiBlocklistMonitor.updateFirmwareRoamingConfiguration(Set.of("ssid0"),
+                Collections.EMPTY_SET);
 
         ArgumentCaptor<ArrayList> ssidAllowlistCaptor = ArgumentCaptor.forClass(ArrayList.class);
         verify(mWifiConnectivityHelper).setFirmwareRoamingConfiguration(
@@ -1832,5 +1866,42 @@ public class WifiBlocklistMonitorTest extends WifiBaseTest {
         assertEquals(Set.of(TEST_BSSID_3), mWifiBlocklistMonitor.updateAndGetBssidBlocklist());
         assertEquals(Set.of(WifiBlocklistMonitor.REASON_ASSOCIATION_REJECTION),
                 mWifiBlocklistMonitor.getFailureReasonsForSsid(TEST_SSID_1));
+    }
+
+    /**
+     * Verify that onEnableNetwork clears blocked BSSIDs for the given SSID except for certain
+     * reasons.
+     */
+    @Test
+    public void testOnEnableNetwork() {
+        WifiConfiguration config1 = WifiConfigurationTestUtil.createPskNetwork(TEST_SSID_1);
+        WifiConfiguration config2 = WifiConfigurationTestUtil.createPskNetwork(TEST_SSID_2);
+        long testDuration = 5500L;
+
+        // Block TEST_BSSID_1 with REASON_AP_UNABLE_TO_HANDLE_NEW_STA (should be cleared)
+        mWifiBlocklistMonitor.blockBssidForDurationMs(TEST_BSSID_1, config1, testDuration,
+                WifiBlocklistMonitor.REASON_AP_UNABLE_TO_HANDLE_NEW_STA, TEST_GOOD_RSSI);
+        // Block TEST_BSSID_2 with REASON_APP_DISALLOW (should NOT be cleared)
+        mWifiBlocklistMonitor.blockBssidForDurationMs(TEST_BSSID_2, config1, testDuration,
+                WifiBlocklistMonitor.REASON_APP_DISALLOW, TEST_GOOD_RSSI);
+        // Block TEST_BSSID_3 with REASON_FRAMEWORK_DISCONNECT_CONNECTED_SCORE
+        // (should NOT be cleared)
+        mWifiBlocklistMonitor.blockBssidForDurationMs(TEST_BSSID_3, config1, testDuration,
+                WifiBlocklistMonitor.REASON_FRAMEWORK_DISCONNECT_CONNECTED_SCORE, TEST_GOOD_RSSI);
+        // Block a BSSID for config2 (should NOT be affected)
+        String bssid4 = "0a:08:5c:67:89:04";
+        mWifiBlocklistMonitor.blockBssidForDurationMs(bssid4, config2, testDuration,
+                WifiBlocklistMonitor.REASON_AP_UNABLE_TO_HANDLE_NEW_STA, TEST_GOOD_RSSI);
+
+        assertEquals(4, mWifiBlocklistMonitor.updateAndGetBssidBlocklist().size());
+
+        mWifiBlocklistMonitor.onEnableNetwork(config1);
+
+        Set<String> blocklist = mWifiBlocklistMonitor.updateAndGetBssidBlocklist();
+        assertFalse(blocklist.contains(TEST_BSSID_1));
+        assertTrue(blocklist.contains(TEST_BSSID_2));
+        assertTrue(blocklist.contains(TEST_BSSID_3));
+        assertTrue(blocklist.contains(bssid4));
+        assertEquals(3, blocklist.size());
     }
 }

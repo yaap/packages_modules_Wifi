@@ -33,6 +33,11 @@ python_library_host {
     srcs: ["wifi_test_utils.py"],
 }
 
+python_library_host {
+    name: "sniffer_helper",
+    srcs: ["sniffer_helper.py"],
+}
+
 python_defaults {
     name: "CtsWifiMultiDevicePythonDefaults",
     libs: [
@@ -45,29 +50,15 @@ python_defaults {
 }
 
 python_test_host {
-    name: "CtsWifiAwareTestCases",
-    main: "aware/wifi_aware_test.py",
-    srcs: ["aware/wifi_aware_test.py"],
-    test_config: "aware/AndroidTest.xml",
-    device_common_data: [
-        // Package the snippet with the mobly test
-        ":wifi_aware_snippet",
-    ],
-    test_options: {
-        unit_test: false,
-    },
-    defaults: ["CtsWifiMultiDevicePythonDefaults"],
-}
-
-python_test_host {
     name: "CtsWifiAwareTests",
     main: "aware/cts_wifi_aware_test_suite.py",
-    test_config: "aware/AndroidTestNew.xml",
+    test_config: "aware/AndroidTest.xml",
     srcs: [
         "aware/cts_wifi_aware_test_suite.py",
         "aware/wifi_aware_network_test.py",
         "aware/wifi_aware_discovery_ranging_test.py",
         "aware/aware_snippet_utils.py",
+        "aware/wifi_aware_pairing_test.py",
     ],
     libs: [
         "aware_lib_utils",
@@ -75,6 +66,7 @@ python_test_host {
         "wifi_aware_constants",
         "wifi_test_utils",
         "platform-test-py-annotations",
+        "sniffer_helper",
     ],
     device_common_data: [":wifi_mobly_snippet"],
     test_options: {
@@ -115,13 +107,17 @@ genrule {
     srcs: [
         // Declare all test files here
         "connection/*",
+        // Include the python files in the parent folder
+        "*.py",
     ],
     tools: [
         "soong_zip",
     ],
     cmd: "mkdir -p $(genDir)/dist &&" + // Create temp directory
-        // Copy all connection/ test files
+        // Copy all test/connection/ test files
         "cp -rv packages/modules/Wifi/tests/hostsidetests/multidevices/test/connection/ $(genDir)/dist/ &&" +
+        // Copy all `test/*.py` test files
+        "cp packages/modules/Wifi/tests/hostsidetests/multidevices/test/*.py $(genDir)/dist/ &&" +
         // Copy the entry point to package root as __main__.py
         "cp $(genDir)/dist/connection/wifi_connection_test_suite.py $(genDir)/dist/__main__.py &&" +
         // Copy requirements file to package root
@@ -130,7 +126,6 @@ genrule {
         "$(location soong_zip) -o $(out) -C $(genDir)/dist -D $(genDir)/dist",
     out: ["CtsWifiConnectionTests_py.zip"],
 }
-
 
 python_library_host {
     name: "wifi_direct_constants",
@@ -293,7 +288,7 @@ python_test_host {
 
 // New entry for WifiUsdMoblyTestCases
 python_test_host {
-    name: "WifiUsdTests",
+    name: "CtsWifiUsdTests",
     main: "usd/wifi_usd_test.py",
     srcs: ["usd/wifi_usd_test.py"],
     test_config: "usd/AndroidTest.xml",
@@ -303,8 +298,7 @@ python_test_host {
         "platform-test-py-annotations",
     ],
     device_common_data: [
-        ":wifi_usd_snippet", // Package the custom USD snippet
-        ":mobly-bundled-snippets", // Package the standard Mobly snippet
+        ":wifi_mobly_snippet",
     ],
     test_options: {
         unit_test: false,
@@ -312,5 +306,6 @@ python_test_host {
     },
     test_suites: [
         "general-tests",
+        "cts-v-host",
     ],
 }

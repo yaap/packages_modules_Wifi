@@ -30,7 +30,7 @@ public class TestUtils {
         private final SparseIntArray mTransactionIds = new SparseIntArray();
 
         MonitoredWifiAwareNativeApi() {
-            super(null); // doesn't matter - mocking parent
+            super(null, null); // doesn't matter - mocking parent
         }
 
         private void addTransactionId(int transactionId) {
@@ -49,7 +49,7 @@ public class TestUtils {
         }
 
         public boolean enableAndConfigure(short transactionId, ConfigRequest configRequest,
-                boolean notifyIdentityChange, boolean initialConfiguration, boolean isInteractive,
+                boolean initialConfiguration, boolean isInteractive,
                 boolean isIdle, boolean rangingEnabled, boolean isInstantCommunicationEnabled,
                 int instantModeChannel, int clusterId) {
             addTransactionId(transactionId);
@@ -117,38 +117,40 @@ public class TestUtils {
                 String interfaceName, byte[] appInfo,
                 boolean isOutOfBand, Capabilities capabilities,
                 WifiAwareDataPathSecurityConfig securityConfig, byte pubSubId,
-                boolean frameProtectionEnabled) {
+                boolean frameProtectionEnabled, byte[] peerMac, byte[] ndiInitMac) {
             addTransactionId(transactionId);
             return true;
         }
 
-        public boolean endDataPath(short transactionId, int ndpId) {
+        public boolean endDataPath(short transactionId, int ndpId, byte[] peer, byte[] ndiInitMac,
+                String ndiName) {
             addTransactionId(transactionId);
             return true;
         }
 
         public boolean respondToPairingRequest(short transactionId, int pairingId, boolean accept,
                 byte[] pairingIdentityKey, boolean enablePairingCache, int requestType, byte[] pmk,
-                String password, int akm, int cipherSuite) {
+                String password, int akm, int cipherSuite, byte pubSubID, byte[] peerMac,
+                byte[] peerNik) {
             addTransactionId(transactionId);
             return true;
         }
 
         public boolean initiatePairing(short transactionId, int peerId, byte[] peer,
                 byte[] pairingIdentityKey, boolean enablePairingCache, int requestType, byte[] pmk,
-                String password, int akm, int cipherSuite) {
+                String password, int akm, int cipherSuite, byte pubSubID, byte[] peerNik) {
             addTransactionId(transactionId);
             return true;
         }
 
         public boolean respondToBootstrappingRequest(short transactionId, int bootstrappingId,
-                boolean accept, byte pubSubId, int method) {
+                boolean accept, byte pubSubId, int method, byte[] peerDiscMacAddr) {
             addTransactionId(transactionId);
             return true;
         }
 
         public boolean initiateBootstrapping(short transactionId, int peerId, byte[] peer,
-                int method, byte[] cookie, byte pubSubId, boolean isComeBack) {
+                int method, byte[] cookie, byte pubSubId, boolean isComeBack, byte[] ssi) {
             addTransactionId(transactionId);
             return true;
         }
